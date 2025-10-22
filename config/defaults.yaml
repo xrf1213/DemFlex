@@ -1,0 +1,60 @@
+program:
+  season_months: [6, 7, 8, 9]
+  window_local:
+    start_time: "14:00"   # local time
+    end_time: "19:00"     # local time
+    weekdays_only: true
+  blackout_dates: []       # e.g., ["2024-07-04", "2024-09-02"]
+  max_events_per_season: 20
+  min_gap_days: 1
+
+constraints:
+  event_length_h_min: 1
+  event_length_h_max: 4
+  deltaT_F_min: 1
+  deltaT_F_max: 4
+
+cohort:
+  N_eligible: 50000
+  penetration: 0.4          # share with smart thermostats
+  enrollment_rate: 0.5
+  enablement_rate: 0.8
+  diversity_factor: 0.9
+
+st_model:
+  alpha_kW_per_deg: 0.2     # kW/home/°F at start of event
+  duration_decay:
+    breakpoints_h: [1, 2, 3, 4]
+    multipliers:   [1.0, 0.9, 0.8, 0.7]
+  cap_kW_per_home: 1.2
+  rebound_fraction: 0.4
+
+economics:
+  capacity_value_per_kWyr: 120
+  flat_energy_price_per_kWh: 0.12   # used if no price series provided
+  device_cost: 0          # BYOT example; set >0 for utility-provided devices
+  install_cost: 0
+  upfront_incentive: 100
+  annual_incentive: 25
+  per_event_incentive: 2
+  platform_fee_annual: 50000
+  admin_annual: 30000
+  mv_annual: 15000
+  per_event_cost: 1000
+  program_life_years: 10
+  discount_rate: 0.07
+
+io:
+  timezone: "America/Los_Angeles"
+  load_data_path: "data/Native_Load_2024.xlsx"   # default to 2024; change as needed
+  load_time_column: "Hour Ending"                # as in Excel sharedStrings
+  load_zone_column: "ERCOT"                      # or one of: COAST,EAST,FWEST,NORTH,NCENT,SOUTH,SCENT,WEST
+  price_data_path: "data/ercot_lz_prices_hourly.csv"
+  price_time_column: "hour_ending_str"           # format: MM/DD/YYYY HH:00 (hour ending)
+  price_zone_column: "LZ_NORTH"                  # choose LZ_* to match your location
+  output_dir: "outputs"
+
+run_defaults:
+  target_kW: 50
+  prioritize: "capacity"      # or "energy"
+  baseline_method: "percentile90"
