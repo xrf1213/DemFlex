@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple, Union, IO, List
+from typing import Optional, Union, IO, List
 
 import pandas as pd
 
-from .config import IOConfig, ProgramWindow
+from .config import IOConfig
 
 
 def _ensure_tz(s: pd.DatetimeIndex | pd.Series, tz: str) -> pd.DatetimeIndex:
@@ -116,46 +116,7 @@ def read_prices(io: IOConfig, lz: Optional[str] = None, file_obj: Optional[Union
     return out
 
 
-def program_mask(ts: pd.Series, program: ProgramWindow) -> pd.Series:
-    dt = pd.DatetimeIndex(ts)
-    in_month = pd.Series(dt.month.isin(program.season_months), index=dt)
-    if program.weekdays_only:
-        # Monday=0 .. Sunday=6
-        is_weekday = pd.Series(dt.weekday <= 4, index=dt)
-    else:
-        is_weekday = pd.Series([True] * len(dt), index=dt)
-
-    # Time window inclusive of start, exclusive of end
-    start_h, start_m = map(int, program.start_time.split(":"))
-    end_h, end_m = map(int, program.end_time.split(":"))
-    hm = dt.hour * 60 + dt.minute
-    in_window = pd.Series((hm >= start_h * 60 + start_m) & (hm < end_h * 60 + end_m), index=dt)
-
-    # blackout dates (YYYY-MM-DD)
-    blk = set(program.blackout_dates)
-    day_str_idx = dt.normalize().strftime("%Y-%m-%d")
-    not_blackout = pd.Series(~pd.Index(day_str_idx).isin(blk), index=dt)
-
-    mask = (in_month & is_weekday & in_window & not_blackout).astype(bool)
-    # Reindex mask to positional index aligned with input series
-    return mask.reset_index(drop=True)
-
-
-def season_weekday_mask(ts: pd.Series, program: ProgramWindow) -> pd.Series:
-    """Mask for season months, weekday rule, and blackout dates, but NOT the daily time window.
-    Useful for computing baselines continuously across the day.
-    """
-    dt = pd.DatetimeIndex(ts)
-    in_month = pd.Series(dt.month.isin(program.season_months), index=dt)
-    if program.weekdays_only:
-        is_weekday = pd.Series(dt.weekday <= 4, index=dt)
-    else:
-        is_weekday = pd.Series([True] * len(dt), index=dt)
-    blk = set(program.blackout_dates)
-    day_str_idx = dt.normalize().strftime("%Y-%m-%d")
-    not_blackout = pd.Series(~pd.Index(day_str_idx).isin(blk), index=dt)
-    mask = (in_month & is_weekday & not_blackout).astype(bool)
-    return mask.reset_index(drop=True)
+# Removed program_mask and season_weekday_mask as unused in current UI.
 
 
 def list_load_zone_columns(io: IOConfig, file_obj: Optional[Union[IO[bytes], IO[str]]] = None) -> List[str]:

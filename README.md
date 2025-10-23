@@ -31,7 +31,7 @@ DemFlex helps planners identify summer demand response events using smart thermo
 ## Data & Config
 - Load data (required): hourly Excel (e.g., `data/Native_Load_2024.xlsx`) with `Hour Ending` and zone columns (e.g., `ERCOT`).
 - Price data (optional for MVP): `data/ercot_lz_prices_hourly.csv` for the Economics view.
-- Config path: `config/defaults.yaml` provides program window, IO paths/zones, cohort, st_model (for Economics), and economics parameters.
+- Config path: `config/defaults.yaml` provides program window, IO paths/zones, cohort, and economics parameters.
 - Sidebar only contains file paths and zone pickers; all other inputs are inside views.
 
 ## Views
@@ -59,12 +59,30 @@ DemFlex helps planners identify summer demand response events using smart thermo
   - Focused Day: pick a day (via small form) to view `before vs after` for that day; does not trigger recomputation.
 - Persistence: Impact results (ΔT, target, plotted data) are stored so switching days is fast and the overview stays visible.
 
-### Economics (MVP)
+### Economics
 - Prerequisites: Run Peaks then Impact (the app enforces order).
-- Inputs: Uses `config.economics` and Impact results (participants/ΔT/target). Uses `st_model` and `cohort` from config to estimate per‑event kW if needed.
-- Benefits (annualized): Capacity + Energy (flat price from config if no series).
-- Costs: CapEx (year 0) + OpEx (annual).
-- Output: benefits/costs tables and an undiscounted cumulative net cashflow chart; intermediates for transparency.
+- Inputs (user-provided on page):
+  - Capacity value (`$/MW-yr`). Default seeded from config `capacity_value_per_kWyr × 1000`.
+  - Energy value (`$/MWh`). Default seeded from config `flat_energy_price_per_kWh × 1000`.
+- Data sources (auto):
+  - Reduced peak (MW) from Impact (aggregate per‑hour reduction).
+  - Events per year and event length (hours) from Peaks.
+- Benefits table (annualized):
+  1) Reduced peak (MW) — from Impact.
+  2) Capacity value ($/MW‑yr) — user input.
+  3) Capacity benefit ($/yr) = 1) × 2).
+  4) Energy saved (MWh/yr) = Reduced peak (MW) × Total event hours (events × length).
+  5) Energy value ($/MWh) — user input.
+  6) Energy benefit ($/yr) = 4) × 5).
+  7) Total benefit ($/yr) = Capacity benefit + Energy benefit.
+- Costs table:
+  - First‑year cost ($) = Fixed cost per MW × Reduced peak (MW), with default fixed cost = `$163,000 / MW` (Smart Thermostat assumption).
+  - Operational cost annual ($/yr) = Op cost per MW‑yr × Reduced peak (MW), default op cost = `$10,000 / MW‑yr` (tunable estimate).
+- Net Profit Over Time (undiscounted):
+  - Year 0: `net = 0 − First‑year cost`.
+  - Years 1..N: `net = Total benefit − Operational cost`.
+  - The chart shows cumulative net across `program_life_years` from config.
+  - Intermediates are available in an expander for transparency.
 
 ## From Target to Parameters (Heuristic)
 - Feasibility bound: `max_kW_feasible ≈ participants_max * r_home(ΔT_max, L_max)`; flag infeasible if `target_kW` exceeds this.
@@ -93,7 +111,7 @@ DemFlex helps planners identify summer demand response events using smart thermo
   - Economics: total cost, total benefit, NPV, payback, BCR, capacity met %.
 
 ## Data Flow Summary
-`target_kW` → load ingest/clean → summer peak pick (top days + continuous windows) → heuristic derive (`num_events`, `L`, `ΔT`, participants) → ST model (kW/kWh/rebound) → cost/benefit → select best → report.
+`target_kW` → load ingest/clean → summer peak pick (top days + continuous windows) → heuristic derive (`num_events`, `L`, `ΔT`, participants) → impact sizing (aggregate MW) → cost/benefit → select best → report.
 
 ## Default Parameters (to calibrate later)
 - `ΔT_setpoint_F ∈ [1, 4]` (default 2°F).
@@ -110,8 +128,8 @@ DemFlex helps planners identify summer demand response events using smart thermo
   3. Derive `num_events`, `event_length`, `ΔT` heuristically to meet `target_kW`.
   4. Compute participants (respecting penetration/enrollment caps).
   5. Run cost/benefit; write a concise report and JSON/CSV outputs.
-- Suggested modules:
-  - `ingest.py`, `peaks.py`, `st_model.py`, `planner.py`, `economics.py`, `report.py`.
+- Suggested modules (current):
+  - `ingest.py`, `peaks.py`, `economics.py`.
 - Validation: check kW vs target; events within window and constraints; quick sensitivity toggles.
 
 ## Edge Cases
@@ -160,45 +178,15 @@ Deliverables (Step 2):
   - For each selected day, choose the best continuous `K`-hour window.
   - Results are sorted chronologically (Top Days by date asc; Event Windows by start time asc).
 
-3) Build thermostat impact model
-- Implement `r_home(ΔT, L)` with duration decay and caps; aggregate to event kW with enablement/diversity.
-- Model kWh shifted and rebound factor.
-
-Deliverables (Step 3):
-- Module: `demflex/st_model.py` with:
-  - `STParams`, `CohortParams` dataclasses.
-  - `duration_multiplier(L_h, breakpoints, multipliers)` piecewise-linear decay.
-  - `r_home_kW(ΔT, L, params)` per-home kW with caps.
-  - `aggregate_event_kW(r_home, participants, enablement, diversity)` aggregate kW.
-  - `participants_for_target(target_kW, r_home, cohort)` feasibility + required participants.
-  - `event_energy_kwh(event_kW, L, rebound_fraction)` curtailed/rebound/net kWh.
-  - `summarize_event(ΔT, L, target_kW, st, cohort)` convenience wrapper.
-- Config parsing: `demflex/config.py` now parses `cohort` and `st_model` blocks into dataclasses and attaches them to `RootConfig`.
-
-Example usage (pseudo):
-```
-from demflex.config import load_yaml_config, parse_config
-from demflex.st_model import STParams, CohortParams, summarize_event
-
-cfg = parse_config(load_yaml_config('config/defaults.yaml'))
-st = STParams(
-  alpha_kW_per_deg=cfg.st.alpha_kW_per_deg,
-  duration_breakpoints_h=cfg.st.duration_breakpoints_h,
-  duration_multipliers=cfg.st.duration_multipliers,
-  cap_kW_per_home=cfg.st.cap_kW_per_home,
-  rebound_fraction=cfg.st.rebound_fraction,
-)
-cohort = CohortParams(**cfg.cohort.__dict__)
-res = summarize_event(deltaT_F=2.0, L_h=3.0, target_kW=50, st=st, cohort=cohort)
-```
+3) Impact sizing (current MVP)
+- Impact view uses a simple linear rule to size ΔT and compute per‑hour aggregate reduction (no rebound). Advanced thermostat modeling can be reintroduced later.
 
 4) Add heuristic planner from target
 - Given `target_kW`, derive `num_events`, `event_length`, `ΔT`, and participants within bounds.
 - Handle infeasible targets and suggest relaxations.
 
 5) Implement economics (cost/benefit)
-- Annualized cost (CapEx via CRF + OpEx) and benefits (capacity + energy minus rebound).
-- Compute NPV, payback, and BCR.
+- Annualized benefits and costs per updated Economics page (capacity + energy) with simple cashflow.
 
 6) Wire CLI and reporting
 - CLI inputs (config path, `target_kW`) and outputs (console summary + JSON/CSV).
@@ -223,9 +211,8 @@ res = summarize_event(deltaT_F=2.0, L_h=3.0, target_kW=50, st=st, cohort=cohort)
 - `app.py`: Streamlit app (Peaks / Impact / Economics).
 - `demflex/peaks.py`: summer peak selection (top days + continuous windows).
 - `demflex/ingest.py`: data loading and helpers.
-- `demflex/st_model.py`: thermostat model (kept for Economics and future extensions).
-- `demflex/economics.py`: simple annualized benefits/costs and cashflow.
-- `config/defaults.yaml`: program, IO paths, cohort, st_model, economics.
+- `demflex/economics.py`: annualized benefits/costs and cashflow helpers.
+- `config/defaults.yaml`: program, IO paths, cohort, economics.
 
 ## Notes & Limitations
 - Impact view uses a simple linear model (no rebound); Economics uses a simplified annualized model. Both are placeholders for calibration/expansion.

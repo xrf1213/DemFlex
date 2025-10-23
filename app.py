@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import io
 from pathlib import Path
 import math
 
@@ -16,8 +14,7 @@ from demflex.ingest import (
     list_price_zone_columns,
 )
 from demflex import peaks as peaks_mod
-from demflex.st_model import STParams, CohortParams, summarize_event
-from demflex.economics import EconInputs, simple_economics
+from demflex.economics import economics_from_peak
 
 
 st.set_page_config(page_title="DemFlex", layout="wide")
@@ -374,44 +371,36 @@ elif page == "Impact":
             st.altair_chart(alt.layer(day_orig, day_after).resolve_scale(y="shared"), use_container_width=True)
 
 elif page == "Economics":
+    # Inputs for economics values (keep layout simple; two user inputs as requested)
+    # Defaults come from config where possible (converted to MW and MWh units)
+    default_cap_value_per_MWyr = None
+    default_energy_value_per_MWh = None
+    try:
+        default_cap_value_per_MWyr = float(cfg.economics.capacity_value_per_kWyr) * 1000.0
+    except Exception:
+        default_cap_value_per_MWyr = 0.0
+    try:
+        default_energy_value_per_MWh = float(cfg.economics.flat_energy_price_per_kWh) * 1000.0
+    except Exception:
+        default_energy_value_per_MWh = 0.0
+
+    c1, c2 = st.columns(2)
+    with c1:
+        per_capacity_value_per_MWyr = st.number_input(
+            "Capacity value ($/MW-yr)", min_value=0.0, value=float(default_cap_value_per_MWyr), step=1000.0
+        )
+    with c2:
+        per_energy_value_per_MWh = st.number_input(
+            "Energy value ($/MWh)", min_value=0.0, value=float(default_energy_value_per_MWh), step=1.0
+        )
+
     run_btn_econ = st.button("Compute Economics")
     if run_btn_econ:
         econ_cfg = getattr(cfg, "economics", None)
-        if cfg.st is None or cfg.cohort is None or econ_cfg is None:
-            st.warning("Missing cohort/st_model/economics config; cannot compute economics.")
+        if econ_cfg is None:
+            st.warning("Missing economics config; cannot compute economics.")
         else:
-            # Build parameters
-            st_params = STParams(
-                alpha_kW_per_deg=cfg.st.alpha_kW_per_deg,
-                duration_breakpoints_h=cfg.st.duration_breakpoints_h,
-                duration_multipliers=cfg.st.duration_multipliers,
-                cap_kW_per_home=cfg.st.cap_kW_per_home,
-                rebound_fraction=cfg.st.rebound_fraction,
-            )
-            cohort = CohortParams(
-                N_eligible=cfg.cohort.N_eligible,
-                penetration=cfg.cohort.penetration,
-                enrollment_rate=cfg.cohort.enrollment_rate,
-                enablement_rate=cfg.cohort.enablement_rate,
-                diversity_factor=cfg.cohort.diversity_factor,
-            )
-            econ_inputs = EconInputs(
-                capacity_value_per_kWyr=econ_cfg.capacity_value_per_kWyr,
-                flat_energy_price_per_kWh=econ_cfg.flat_energy_price_per_kWh,
-                device_cost=econ_cfg.device_cost,
-                install_cost=econ_cfg.install_cost,
-                upfront_incentive=econ_cfg.upfront_incentive,
-                annual_incentive=econ_cfg.annual_incentive,
-                per_event_incentive=econ_cfg.per_event_incentive,
-                platform_fee_annual=econ_cfg.platform_fee_annual,
-                admin_annual=econ_cfg.admin_annual,
-                mv_annual=econ_cfg.mv_annual,
-                per_event_cost=econ_cfg.per_event_cost,
-                program_life_years=econ_cfg.program_life_years,
-                discount_rate=econ_cfg.discount_rate,
-            )
-
-            # Select windows from session (require Peaks to be completed)
+            # Require Peaks completed to get events and length
             windows_df = st.session_state.get("windows_df")
             event_length_h = st.session_state.get("peaks_event_length_h")
             if windows_df is None or event_length_h is None:
@@ -419,25 +408,19 @@ elif page == "Economics":
                 st.stop()
             events_per_year = len(windows_df)
 
-            # Event kW via ST model
-            deltaT_use = st.session_state.get("impact_deltaT_F")
-            target_use = st.session_state.get("impact_target_kW")
-            if deltaT_use is None or target_use is None:
-                st.warning("Please compute Impact first to set ΔT and Target kW, then return to Economics.")
+            # Require Impact completed to get reduced peak
+            reduced_peak_MW = st.session_state.get("impact_aggregate_MW")
+            if reduced_peak_MW is None:
+                st.warning("Please compute Impact first to determine reduced peak (MW), then return to Economics.")
                 st.stop()
-            deltaT_use = float(deltaT_use)
-            target_use = float(target_use)
-            res = summarize_event(deltaT_F=deltaT_use, L_h=float(event_length_h), target_kW=target_use, st=st_params, cohort=cohort)
-            event_kW_kw = float(res.get("event_kW", 0.0))  # already kW
-            participants_used = int(res.get("participants_used", 0))
 
-            econ_res = simple_economics(
-                events_per_year=events_per_year,
-                event_kW_kw=event_kW_kw,
+            econ_res = economics_from_peak(
+                reduced_peak_MW=float(reduced_peak_MW),
+                events_per_year=int(events_per_year),
                 event_length_h=float(event_length_h),
-                rebound_fraction=float(st_params.rebound_fraction),
-                participants=participants_used,
-                econ=econ_inputs,
+                per_capacity_value_per_MWyr=float(per_capacity_value_per_MWyr),
+                per_energy_value_per_MWh=float(per_energy_value_per_MWh),
+                program_life_years=int(econ_cfg.program_life_years),
             )
 
             st.subheader("Benefits (annualized)")

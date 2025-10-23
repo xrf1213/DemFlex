@@ -1,93 +1,90 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Dict, Any
 import pandas as pd
 
-
-@dataclass
-class EconInputs:
-    capacity_value_per_kWyr: float
-    flat_energy_price_per_kWh: float
-    device_cost: float
-    install_cost: float
-    upfront_incentive: float
-    annual_incentive: float
-    per_event_incentive: float
-    platform_fee_annual: float
-    admin_annual: float
-    mv_annual: float
-    per_event_cost: float
-    program_life_years: int
-    discount_rate: float
+"""Economics helpers for the Streamlit app."""
 
 
-def simple_economics(events_per_year: int,
-                     event_kW_kw: float,
-                     event_length_h: float,
-                     rebound_fraction: float,
-                     participants: int,
-                     econ: EconInputs) -> Dict[str, Any]:
-    """Compute simple annual benefits and costs and build a cashflow over program life.
+def economics_from_peak(
+    reduced_peak_MW: float,
+    events_per_year: int,
+    event_length_h: float,
+    per_capacity_value_per_MWyr: float,
+    per_energy_value_per_MWh: float,
+    program_life_years: int,
+    fixed_cost_per_MW: float = 163_000.0,
+    operational_cost_per_MWyr: float = 10_000.0,
+) -> Dict[str, Any]:
+    """Custom economics based on Impact results (peak reduction in MW).
 
-    MVP assumptions:
-      - Capacity benefit = event_kW_kw * capacity_value_per_kWyr.
-      - Energy benefit/event = (event_kW_kw * event_length_h) * (1 - rebound_fraction) [kWh] * flat_price.
-      - Energy benefit (annual) = per-event energy benefit * events_per_year.
-      - CapEx at year 0 = participants * (device_cost + install_cost + upfront_incentive).
-      - OpEx (annual) = platform + admin + M&V + participants * annual_incentive + events_per_year * (per_event_incentive + per_event_cost).
-      - Net cashflow: Year0 = -CapEx; Years 1..N = Benefits - OpEx (no CapEx).
+    - Benefits (annualized):
+        1) Reduced peak (MW)
+        2) Per capacity value ($/MW-yr) [input]
+        3) Capacity benefit = 1) * 2)
+        4) Energy saved (MWh) = reduced_peak_MW * total_event_hours
+        5) Per energy value ($/MWh) [input]
+        6) Energy benefit = 4) * 5)
+        7) Total benefit = capacity + energy
+    - Costs:
+        - First-year cost = fixed_cost_per_MW * reduced_peak_MW
+        - Operational cost (annual) = operational_cost_per_MWyr * reduced_peak_MW
+    - Cashflow (undiscounted): Year 0 = -First-year cost; Years 1..N = Total benefit - Operational cost
     """
+
+    reduced_peak_MW = max(0.0, float(reduced_peak_MW))
+    events_per_year = int(max(0, events_per_year))
+    event_length_h = max(0.0, float(event_length_h))
+    total_event_hours = events_per_year * event_length_h
+
     # Benefits
-    capacity_benefit = event_kW_kw * econ.capacity_value_per_kWyr
-    kWh_net_per_event = max(event_kW_kw, 0.0) * max(event_length_h, 0.0) * max(1.0 - rebound_fraction, 0.0)
-    energy_benefit_per_event = kWh_net_per_event * econ.flat_energy_price_per_kWh
-    energy_benefit_annual = events_per_year * energy_benefit_per_event
-    total_benefit_annual = capacity_benefit + energy_benefit_annual
+    capacity_benefit = reduced_peak_MW * float(per_capacity_value_per_MWyr)
+    energy_saved_MWh = reduced_peak_MW * total_event_hours
+    energy_benefit = energy_saved_MWh * float(per_energy_value_per_MWh)
+    total_benefit = capacity_benefit + energy_benefit
 
     benefits_table = pd.DataFrame([
+        {"component": "Reduced peak (MW)", "value": round(reduced_peak_MW, 6)},
+        {"component": "Capacity value ($/MW-yr)", "value": round(float(per_capacity_value_per_MWyr), 2)},
         {"component": "Capacity benefit ($/yr)", "value": round(capacity_benefit, 2)},
-        {"component": "Energy benefit per event ($)", "value": round(energy_benefit_per_event, 2)},
-        {"component": "Energy benefit annual ($/yr)", "value": round(energy_benefit_annual, 2)},
-        {"component": "Total benefit annual ($/yr)", "value": round(total_benefit_annual, 2)},
+        {"component": "Energy saved (MWh/yr)", "value": round(energy_saved_MWh, 6)},
+        {"component": "Energy value ($/MWh)", "value": round(float(per_energy_value_per_MWh), 2)},
+        {"component": "Energy benefit ($/yr)", "value": round(energy_benefit, 2)},
+        {"component": "Total benefit ($/yr)", "value": round(total_benefit, 2)},
     ])
 
     # Costs
-    capex = participants * (econ.device_cost + econ.install_cost + econ.upfront_incentive)
-    opex_annual = (
-        econ.platform_fee_annual
-        + econ.admin_annual
-        + econ.mv_annual
-        + participants * econ.annual_incentive
-        + events_per_year * (econ.per_event_incentive + econ.per_event_cost)
-    )
+    first_year_cost = float(fixed_cost_per_MW) * reduced_peak_MW
+    operational_cost_annual = float(operational_cost_per_MWyr) * reduced_peak_MW
     costs_table = pd.DataFrame([
-        {"component": "CapEx (year 0) ($)", "value": round(capex, 2)},
-        {"component": "OpEx annual ($/yr)", "value": round(opex_annual, 2)},
+        {"component": "First-year cost ($)", "value": round(first_year_cost, 2)},
+        {"component": "Operational cost annual ($/yr)", "value": round(operational_cost_annual, 2)},
     ])
 
-    # Cashflow over life (undiscounted for MVP; can add NPV later)
-    years = list(range(0, int(econ.program_life_years) + 1))
-    cash = []
+    # Cashflow
+    years = list(range(0, int(program_life_years) + 1))
+    rows = []
     for y in years:
         if y == 0:
             benefit = 0.0
-            cost = capex
+            cost = first_year_cost
         else:
-            benefit = total_benefit_annual
-            cost = opex_annual
+            benefit = total_benefit
+            cost = operational_cost_annual
         net = benefit - cost
-        cash.append({"year": y, "benefit": benefit, "cost": cost, "net": net})
-    cf = pd.DataFrame(cash)
+        rows.append({"year": y, "benefit": benefit, "cost": cost, "net": net})
+    cf = pd.DataFrame(rows)
     cf["cumulative_net"] = cf["net"].cumsum()
 
     intermediates = {
         "events_per_year": events_per_year,
-        "event_kW_kw": event_kW_kw,
         "event_length_h": event_length_h,
-        "rebound_fraction": rebound_fraction,
-        "participants": participants,
-        "kWh_net_per_event": kWh_net_per_event,
+        "total_event_hours": total_event_hours,
+        "reduced_peak_MW": reduced_peak_MW,
+        "per_capacity_value_per_MWyr": float(per_capacity_value_per_MWyr),
+        "per_energy_value_per_MWh": float(per_energy_value_per_MWh),
+        "fixed_cost_per_MW": float(fixed_cost_per_MW),
+        "operational_cost_per_MWyr": float(operational_cost_per_MWyr),
     }
 
     return {
@@ -96,4 +93,3 @@ def simple_economics(events_per_year: int,
         "cashflow": cf,
         "intermediates": intermediates,
     }
-
