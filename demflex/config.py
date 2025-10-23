@@ -39,6 +39,7 @@ class RootConfig:
     # Optional extended configs parsed from YAML for modeling
     cohort: "CohortConfig | None" = None
     st: "STModelConfig | None" = None
+    economics: "EconomicsConfig | None" = None
 
 
 @dataclass
@@ -57,6 +58,23 @@ class STModelConfig:
     duration_multipliers: List[float]
     cap_kW_per_home: float
     rebound_fraction: float
+
+
+@dataclass
+class EconomicsConfig:
+    capacity_value_per_kWyr: float
+    flat_energy_price_per_kWh: float
+    device_cost: float
+    install_cost: float
+    upfront_incentive: float
+    annual_incentive: float
+    per_event_incentive: float
+    platform_fee_annual: float
+    admin_annual: float
+    mv_annual: float
+    per_event_cost: float
+    program_life_years: int
+    discount_rate: float
 
 
 def load_yaml_config(path: str | Path) -> dict:
@@ -116,4 +134,24 @@ def parse_config(cfg: dict) -> RootConfig:
             rebound_fraction=float(s.get("rebound_fraction", 0.4)),
         )
 
-    return RootConfig(program=program_window, io=io_cfg, baseline_method=baseline_method, cohort=cohort_cfg, st=st_cfg)
+    # Optional economics config
+    econ_cfg = None
+    if "economics" in cfg:
+        e = cfg["economics"]
+        econ_cfg = EconomicsConfig(
+            capacity_value_per_kWyr=float(e.get("capacity_value_per_kWyr", 0.0)),
+            flat_energy_price_per_kWh=float(e.get("flat_energy_price_per_kWh", 0.0)),
+            device_cost=float(e.get("device_cost", 0.0)),
+            install_cost=float(e.get("install_cost", 0.0)),
+            upfront_incentive=float(e.get("upfront_incentive", 0.0)),
+            annual_incentive=float(e.get("annual_incentive", 0.0)),
+            per_event_incentive=float(e.get("per_event_incentive", 0.0)),
+            platform_fee_annual=float(e.get("platform_fee_annual", 0.0)),
+            admin_annual=float(e.get("admin_annual", 0.0)),
+            mv_annual=float(e.get("mv_annual", 0.0)),
+            per_event_cost=float(e.get("per_event_cost", 0.0)),
+            program_life_years=int(e.get("program_life_years", 10)),
+            discount_rate=float(e.get("discount_rate", 0.07)),
+        )
+
+    return RootConfig(program=program_window, io=io_cfg, baseline_method=baseline_method, cohort=cohort_cfg, st=st_cfg, economics=econ_cfg)

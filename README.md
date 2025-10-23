@@ -1,10 +1,8 @@
-# DEMFlex — MVP Design (Smart Thermostat Only)
+# DemFlex — Smart Thermostat MVP
 
 This document outlines the initial design and data flow for DEMFlex, a planning tool for utility planners to meet capacity reduction targets using demand response via Smart Thermostats. The MVP supports a single technology (Smart Thermostat) and produces program/event parameters plus cost–benefit results.
 
-## Goal & Scope
-- Objective: Given a capacity reduction target, derive Smart Thermostat demand response parameters (number of events, event length, setpoint change), estimate participants, and compute program cost/benefit.
-- MVP Scope: Smart Thermostat only; heuristic event planning; simple baseline; annualized economics; report best feasible plan.
+DemFlex helps planners identify summer demand response events using smart thermostats, estimate per‑event reduction, and review simple benefits/costs. The app is a Streamlit UI with three views: Peaks, Impact, and Economics.
 
 ## Key Assumptions (MVP)
 - Load data is provided (hourly or 15‑minute) and tagged with calendar info (weekday/season) or can be inferred.
@@ -26,23 +24,47 @@ This document outlines the initial design and data flow for DEMFlex, a planning 
 - ST Response Params: `{alpha_kW_per_deg, duration_decay, saturation_caps}`.
 - Results: `{num_events, event_length_h, ΔT_F, participants, total_cost, total_benefit, NPV, payback_years, BCR, capacity_met_pct}`.
 
-## Processing Pipeline
-1. Data ingest → cleaning → baseline build.
-2. Peak identification within the program window.
-3. Heuristic event scheduling and parameter derivation to meet `target_kW`.
-4. Smart Thermostat impact modeling (kW, kWh, rebound).
-5. Cost/benefit calculation and selection of best plan.
-6. Reporting (console + CSV/JSON).
+## Install & Run
+- Install: `pip install -r requirements.txt`
+- Launch: `streamlit run app.py`
 
-## Baseline & Peaks (MVP)
-- Baseline: simple high‑percentile by hour (e.g., 90–95th percentile of non‑event days) or recent‑window average.
-- Peak candidates: top intervals in the program window by baseline load (or by price if energy value is prioritized).
-- Constraints: respect blackout days, holidays, and minimum spacing between events.
+## Data & Config
+- Load data (required): hourly Excel (e.g., `data/Native_Load_2024.xlsx`) with `Hour Ending` and zone columns (e.g., `ERCOT`).
+- Price data (optional for MVP): `data/ercot_lz_prices_hourly.csv` for the Economics view.
+- Config path: `config/defaults.yaml` provides program window, IO paths/zones, cohort, st_model (for Economics), and economics parameters.
+- Sidebar only contains file paths and zone pickers; all other inputs are inside views.
 
-## Smart Thermostat Impact Model
-- Per‑home kW during event: `r_home(ΔT, L) = alpha * ΔT * g(L)` with caps; `g(L)` applies duration decay (e.g., diminishing returns after 2–3 h).
-- Aggregation: `r_event_kW = participants * enablement * r_home(...) * diversity_factor`.
-- Rebound: portion `β_rebound` of curtailed kWh returns post‑event; optional pre‑cool credit.
+## Views
+
+### Peaks
+- Purpose: Pick summer peak events with minimal inputs.
+- Inputs: `Top days (D)`, `Event length (hours, continuous)`.
+- Method: Summer months only (config `program.season_months`, default `[6,7,8,9]`). Select top `D` days by daily max, then per day choose the best continuous `K`‑hour window (highest average load).
+- Outputs:
+  - Chart: summer load with red markers on selected windows (y‑axis does not start at zero).
+  - Tables: Top Days and Event Windows; CSV downloads.
+- Persistence: Selected windows are saved and reused by Impact/Economics.
+
+### Impact
+- Purpose: Derive thermostat setpoint (ΔT) and visualize before/after load.
+- Inputs: `Total households (region)`, `Penetration rate` (0..1), `Target capacity (MW)`.
+- Assumption: Each device reduces 0.512 kW at ΔT=4°F; linear scaling with ΔT.
+- Computation:
+  - Participants = households × penetration (integer).
+  - `ΔT_required = ceil(target_kW / (participants × 0.512) × 4)`; clamp to integer range [2, 6] °F.
+  - Per‑device reduction = 0.512 × (ΔT_required / 4) kW; aggregate per hour = participants × per‑device / 1000 (MW).
+  - Apply aggregate reduction to all hours inside the selected event windows (no rebound in MVP).
+- Charts:
+  - Overview + detail (brush‑zoom) of summer `original vs after‑event` with event‑hour markers.
+  - Focused Day: pick a day (via small form) to view `before vs after` for that day; does not trigger recomputation.
+- Persistence: Impact results (ΔT, target, plotted data) are stored so switching days is fast and the overview stays visible.
+
+### Economics (MVP)
+- Prerequisites: Run Peaks then Impact (the app enforces order).
+- Inputs: Uses `config.economics` and Impact results (participants/ΔT/target). Uses `st_model` and `cohort` from config to estimate per‑event kW if needed.
+- Benefits (annualized): Capacity + Energy (flat price from config if no series).
+- Costs: CapEx (year 0) + OpEx (annual).
+- Output: benefits/costs tables and an undiscounted cumulative net cashflow chart; intermediates for transparency.
 
 ## From Target to Parameters (Heuristic)
 - Feasibility bound: `max_kW_feasible ≈ participants_max * r_home(ΔT_max, L_max)`; flag infeasible if `target_kW` exceeds this.
@@ -71,7 +93,7 @@ This document outlines the initial design and data flow for DEMFlex, a planning 
   - Economics: total cost, total benefit, NPV, payback, BCR, capacity met %.
 
 ## Data Flow Summary
-`target_kW` → load ingest/clean → baseline → peak pick → heuristic derive (`num_events`, `L`, `ΔT`, participants) → ST model (kW/kWh/rebound) → cost/benefit → select best → report.
+`target_kW` → load ingest/clean → summer peak pick (top days + continuous windows) → heuristic derive (`num_events`, `L`, `ΔT`, participants) → ST model (kW/kWh/rebound) → cost/benefit → select best → report.
 
 ## Default Parameters (to calibrate later)
 - `ΔT_setpoint_F ∈ [1, 4]` (default 2°F).
@@ -84,12 +106,12 @@ This document outlines the initial design and data flow for DEMFlex, a planning 
 ## MVP Implementation Plan
 - CLI flow:
   1. Read config and load series; accept `target_kW` input.
-  2. Build baseline and pick candidate peaks.
+  2. Identify summer peaks (top `D` days; per-day best continuous `K`-hour window).
   3. Derive `num_events`, `event_length`, `ΔT` heuristically to meet `target_kW`.
   4. Compute participants (respecting penetration/enrollment caps).
   5. Run cost/benefit; write a concise report and JSON/CSV outputs.
 - Suggested modules:
-  - `ingest.py`, `baseline.py`, `peaks.py`, `st_model.py`, `planner.py`, `economics.py`, `report.py`.
+  - `ingest.py`, `peaks.py`, `st_model.py`, `planner.py`, `economics.py`, `report.py`.
 - Validation: check kW vs target; events within window and constraints; quick sensitivity toggles.
 
 ## Edge Cases
@@ -126,17 +148,17 @@ Quick edits to try first:
 - `io.price_data_path`: set to `data/ercot_lz_prices_hourly.csv` (default already set).
 - `io.price_time_column`: `hour_ending_str`; `io.price_zone_column`: choose one of `LZ_*` columns (e.g., `LZ_HOUSTON`, `LZ_NORTH`).
 
-2) Implement baseline and peak logic
-- Build simple percentile/rolling baseline and pick peak intervals within the program window.
-- Respect blackout days and spacing constraints.
+2) Implement summer peak logic
+- Identify top `D` days by daily max; for each, pick best continuous `K`-hour window.
+- Visualize summer load and highlight selected windows; provide CSV exports.
 
 Deliverables (Step 2):
 - Code: `demflex/ingest.py` (data loading), `demflex/peaks.py` (summer peak selection), and Streamlit `app.py`.
 - Selectable zones: pick load zone (e.g., `ERCOT`, `COAST`) and price zone (e.g., `LZ_NORTH`) in the UI; config provides defaults.
 - Current mode (no baseline): filter only by season months (default `[6,7,8,9]`), then:
   - Select top `D` days by daily maximum load, and
-  - Within each selected day, select top `K` hours by load.
-  - Results are sorted chronologically (Top Days by date asc; Top Hours by timestamp asc).
+  - For each selected day, choose the best continuous `K`-hour window.
+  - Results are sorted chronologically (Top Days by date asc; Event Windows by start time asc).
 
 3) Build thermostat impact model
 - Implement `r_home(ΔT, L)` with duration decay and caps; aggregate to event kW with enablement/diversity.
@@ -192,16 +214,19 @@ res = summarize_event(deltaT_F=2.0, L_h=3.0, target_kW=50, st=st, cohort=cohort)
 8) Document and refine README
 - Keep assumptions, decisions log, and examples current; add usage examples as CLI stabilizes.
 
-## Streamlit App
-- Install deps: `pip install -r requirements.txt`
-- Run: `streamlit run app.py`
-- Sidebar controls:
-  - Config path (defaults to `config/defaults.yaml`).
-  - Optional uploads for load (Excel/CSV) and price (CSV) files; otherwise uses paths from config.
-  - Zones: pick Load zone and Price zone columns.
-  - Top days (D) and Top hours per day (K).
-- Output:
-  - Summer load time series (months from config `program.season_months`) with red markers for selected top hours (Altair overlay).
-  - Table: Top Days by daily maximum (sorted by date ascending; dates shown without timezone).
-  - Table: Top Hours within the selected days (sorted by timestamp ascending; timestamps shown without timezone).
-  - Download buttons for Top Days/Top Hours CSVs.
+## Utilities
+- Top‑level buttons:
+  - `Reset Session (keep Peaks)`: clears Impact/Economics context, preserves Peaks windows.
+  - `Full Reset`: clears all session state and cached data.
+
+## File Map
+- `app.py`: Streamlit app (Peaks / Impact / Economics).
+- `demflex/peaks.py`: summer peak selection (top days + continuous windows).
+- `demflex/ingest.py`: data loading and helpers.
+- `demflex/st_model.py`: thermostat model (kept for Economics and future extensions).
+- `demflex/economics.py`: simple annualized benefits/costs and cashflow.
+- `config/defaults.yaml`: program, IO paths, cohort, st_model, economics.
+
+## Notes & Limitations
+- Impact view uses a simple linear model (no rebound); Economics uses a simplified annualized model. Both are placeholders for calibration/expansion.
+- Price data is optional in the MVP; flat price from config is used in Economics when no series is provided.
