@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import yaml
 
@@ -35,28 +35,10 @@ class RootConfig:
     program: ProgramWindow
     io: IOConfig
     baseline_method: str
-    # Optional extended configs parsed from YAML for modeling
-    cohort: "CohortConfig | None" = None
-    st: "STModelConfig | None" = None
     economics: "EconomicsConfig | None" = None
 
 
-@dataclass
-class CohortConfig:
-    N_eligible: int
-    penetration: float
-    enrollment_rate: float
-    enablement_rate: float
-    diversity_factor: float
-
-
-@dataclass
-class STModelConfig:
-    alpha_kW_per_deg: float
-    duration_breakpoints_h: List[float]
-    duration_multipliers: List[float]
-    cap_kW_per_home: float
-    rebound_fraction: float
+# (Removed legacy CohortConfig and STModelConfig; not used in current MVP.)
 
 
 @dataclass
@@ -109,29 +91,7 @@ def parse_config(cfg: dict) -> RootConfig:
 
     baseline_method = cfg.get("run_defaults", {}).get("baseline_method", cfg.get("baseline", {}).get("method", "percentile90"))
 
-    # Optional cohort config
-    cohort_cfg = None
-    if "cohort" in cfg:
-        c = cfg["cohort"]
-        cohort_cfg = CohortConfig(
-            N_eligible=int(c.get("N_eligible", 0)),
-            penetration=float(c.get("penetration", 0.0)),
-            enrollment_rate=float(c.get("enrollment_rate", 0.0)),
-            enablement_rate=float(c.get("enablement_rate", 0.0)),
-            diversity_factor=float(c.get("diversity_factor", 1.0)),
-        )
-
-    # Optional ST model config
-    st_cfg = None
-    if "st_model" in cfg:
-        s = cfg["st_model"]
-        st_cfg = STModelConfig(
-            alpha_kW_per_deg=float(s.get("alpha_kW_per_deg", 0.2)),
-            duration_breakpoints_h=list(s.get("duration_decay", {}).get("breakpoints_h", [1, 2, 3, 4])),
-            duration_multipliers=list(s.get("duration_decay", {}).get("multipliers", [1.0, 0.9, 0.8, 0.7])),
-            cap_kW_per_home=float(s.get("cap_kW_per_home", 1.2)),
-            rebound_fraction=float(s.get("rebound_fraction", 0.4)),
-        )
+    # (Cohort and ST model blocks are ignored in current MVP)
 
     # Optional economics config
     econ_cfg = None
@@ -153,4 +113,4 @@ def parse_config(cfg: dict) -> RootConfig:
             discount_rate=float(e.get("discount_rate", 0.07)),
         )
 
-    return RootConfig(program=program_window, io=io_cfg, baseline_method=baseline_method, cohort=cohort_cfg, st=st_cfg, economics=econ_cfg)
+    return RootConfig(program=program_window, io=io_cfg, baseline_method=baseline_method, economics=econ_cfg)
