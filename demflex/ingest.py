@@ -108,9 +108,10 @@ def read_prices(io: IOConfig, lz: Optional[str] = None, file_obj: Optional[Union
 
     ts = _parse_hour_ending(df[time_col], fmt="%m/%d/%Y %H:%M", tz=io.timezone)
 
+    # Interpret source prices as USD per MWh
     out = pd.DataFrame({
         "ts": ts,
-        "price_per_kWh": pd.to_numeric(df[lz_col], errors="coerce") / 100.0 if df[lz_col].max() > 10 else pd.to_numeric(df[lz_col], errors="coerce"),
+        "price_per_MWh": pd.to_numeric(df[lz_col], errors="coerce"),
     }).dropna()
     out = out.sort_values("ts").reset_index(drop=True)
     return out

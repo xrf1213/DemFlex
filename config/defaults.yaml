@@ -6,7 +6,7 @@ io:
   timezone: "America/Los_Angeles"
   load_data_path: "data/Native_Load_2024.xlsx"
   load_time_column: "Hour Ending"
-  load_zone_column: "ERCOT"          # or one of: COAST,EAST,FWEST,NORTH,NCENT,SOUTH,SCENT,WEST
+  load_zone_column: "NORTH"          # or one of: COAST,EAST,FWEST,NORTH,NCENT,SOUTH,SCENT,WEST
   price_data_path: "data/ercot_lz_prices_hourly.csv"
   price_time_column: "hour_ending_str"   # format: MM/DD/YYYY HH:00 (hour ending)
   price_zone_column: "LZ_NORTH"          # choose LZ_* to match your location

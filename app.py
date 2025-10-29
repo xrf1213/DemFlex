@@ -14,7 +14,8 @@ from demflex.ingest import (
     list_price_zone_columns,
 )
 from demflex import peaks as peaks_mod
-from demflex.economics import economics_from_peak
+import importlib
+import demflex.economics as economics_mod
 
 
 st.set_page_config(page_title="DemFlex", layout="wide")
@@ -78,6 +79,11 @@ def _load_data(cfg):
         except Exception:
             price_df = None
 
+    # Align price series to the same time range as load (e.g., 2024 for default data)
+    if price_df is not None and not load_df.empty:
+        tmin, tmax = load_df["ts"].min(), load_df["ts"].max()
+        price_df = price_df[(price_df["ts"] >= tmin) & (price_df["ts"] <= tmax)].reset_index(drop=True)
+
     return load_df, price_df, load_zone, price_zone
 
 
@@ -114,6 +120,13 @@ if page == "Peaks":
         summer_mask = load_df["ts"].dt.month.isin(cfg.program.season_months)
         summer_plot = load_df.loc[summer_mask, ["ts", "load_MW"]].copy()
         summer_plot["ts"] = pd.to_datetime(summer_plot["ts"]).dt.tz_localize(None)
+        # Apply the same seasonal filtering to prices for consistent row counts
+        price_season_rows = "N/A"
+        if price_df is not None:
+            price_summer_mask = price_df["ts"].dt.month.isin(cfg.program.season_months)
+            price_summer = price_df.loc[price_summer_mask, ["ts", "price_per_MWh"]].copy()
+            price_summer["ts"] = pd.to_datetime(price_summer["ts"]).dt.tz_localize(None)
+            price_season_rows = f"{len(price_summer):,}"
         win_hours = []
         for _, row in windows_df.iterrows():
             start = pd.to_datetime(row["start_ts"]).tz_localize(None)
@@ -127,10 +140,9 @@ if page == "Peaks":
         st.subheader("Inputs")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric(label="Load rows", value=f"{len(load_df):,}")
+            st.metric(label="Load rows (season)", value=f"{len(summer_plot):,}")
         with c2:
-            pr = f"{len(price_df):,}" if price_df is not None else "N/A"
-            st.metric(label="Price rows", value=pr)
+            st.metric(label="Price rows (season)", value=price_season_rows)
         with c3:
             months_str = ", ".join(str(m) for m in cfg.program.season_months)
             st.metric(label="Season months", value=months_str)
@@ -177,8 +189,8 @@ if page == "Peaks":
             st.download_button("Download Event Windows CSV", data=to_csv_bytes(win_display), file_name="event_windows.csv", mime="text/csv")
 
 elif page == "Impact":
-    total_households = st.number_input("Total households (region)", min_value=0, value=100000, step=1000)
-    penetration = st.number_input("Penetration rate", min_value=0.0, max_value=1.0, value=0.4, step=0.05)
+    total_households = st.number_input("Total households (region)", min_value=0, value=3_000_000, step=1000)
+    penetration = st.number_input("Penetration rate", min_value=0.0, max_value=1.0, value=0.08, step=0.01)
     target_mw = st.number_input("Target capacity (MW)", min_value=0.0, value=float(50), step=1.0)
     run_btn_impact = st.button("Compute Impact")
     if run_btn_impact:
@@ -371,32 +383,51 @@ elif page == "Impact":
             st.altair_chart(alt.layer(day_orig, day_after).resolve_scale(y="shared"), use_container_width=True)
 
 elif page == "Economics":
-    # Inputs for economics values (keep layout simple; two user inputs as requested)
-    # Defaults come from config where possible (converted to MW and MWh units)
+    # Inputs for economics values (capacity only; energy uses hourly prices)
+    # Cost inputs per new cost model
     default_cap_value_per_MWyr = None
-    default_energy_value_per_MWh = None
     try:
         default_cap_value_per_MWyr = float(cfg.economics.capacity_value_per_kWyr) * 1000.0
     except Exception:
         default_cap_value_per_MWyr = 0.0
+
+    per_capacity_value_per_MWyr = st.number_input(
+        "Capacity value ($/MW-yr)", min_value=0.0, value=float(default_cap_value_per_MWyr), step=1000.0
+    )
+
+    # Cost inputs
+    # Derive sensible defaults from config if present
+    econ_cfg = getattr(cfg, "economics", None)
+    default_cost_per_device = 200.0
+    default_enroll_credit = 0.0
+    default_retention_credit = 0.0
+    default_operational_per_year = 5.0
+    # Override requested defaults regardless of config where specified
     try:
-        default_energy_value_per_MWh = float(cfg.economics.flat_energy_price_per_kWh) * 1000.0
+        if econ_cfg is not None:
+            # Keep ability to derive device cost if not explicitly overridden
+            # but per request, default to 200 $/device
+            _derived_device = float(getattr(econ_cfg, "device_cost", 0.0)) + float(getattr(econ_cfg, "install_cost", 0.0))
+            if _derived_device > 0:
+                default_cost_per_device = 200.0
+            # Operational cost per household per year defaults to $5/household-yr
+            default_operational_per_year = 5.0
     except Exception:
-        default_energy_value_per_MWh = 0.0
+        pass
+    # Override requested defaults for credits regardless of config
+    default_enroll_credit = 85.0
+    default_retention_credit = 30.0
 
     c1, c2 = st.columns(2)
     with c1:
-        per_capacity_value_per_MWyr = st.number_input(
-            "Capacity value ($/MW-yr)", min_value=0.0, value=float(default_cap_value_per_MWyr), step=1000.0
-        )
+        cost_per_device = st.number_input("Cost per device ($/device)", min_value=0.0, value=float(default_cost_per_device), step=10.0)
+        enroll_credit_per_household = st.number_input("Enroll credit per household ($)", min_value=0.0, value=float(default_enroll_credit), step=10.0)
     with c2:
-        per_energy_value_per_MWh = st.number_input(
-            "Energy value ($/MWh)", min_value=0.0, value=float(default_energy_value_per_MWh), step=1.0
-        )
+        retention_credit_per_household = st.number_input("Retention credit per household ($/yr)", min_value=0.0, value=float(default_retention_credit), step=10.0)
+        operational_cost_per_year = st.number_input("Operational cost per year ($/household-yr)", min_value=0.0, value=float(default_operational_per_year), step=1.0)
 
     run_btn_econ = st.button("Compute Economics")
     if run_btn_econ:
-        econ_cfg = getattr(cfg, "economics", None)
         if econ_cfg is None:
             st.warning("Missing economics config; cannot compute economics.")
         else:
@@ -410,17 +441,30 @@ elif page == "Economics":
 
             # Require Impact completed to get reduced peak
             reduced_peak_MW = st.session_state.get("impact_aggregate_MW")
+            participants = st.session_state.get("impact_participants")
             if reduced_peak_MW is None:
                 st.warning("Please compute Impact first to determine reduced peak (MW), then return to Economics.")
                 st.stop()
+            if participants is None or int(participants) <= 0:
+                st.warning("Please compute Impact first to determine participants, then return to Economics.")
+                st.stop()
 
-            econ_res = economics_from_peak(
+            # Ensure latest economics module (handles Streamlit reloads)
+            economics_mod = importlib.reload(economics_mod)
+            econ_res = economics_mod.economics_from_peak(
                 reduced_peak_MW=float(reduced_peak_MW),
                 events_per_year=int(events_per_year),
                 event_length_h=float(event_length_h),
                 per_capacity_value_per_MWyr=float(per_capacity_value_per_MWyr),
-                per_energy_value_per_MWh=float(per_energy_value_per_MWh),
+                per_energy_value_per_MWh=None,  # use hourly prices instead
                 program_life_years=int(econ_cfg.program_life_years),
+                participants=int(participants),
+                cost_per_device=float(cost_per_device),
+                enroll_credit_per_household=float(enroll_credit_per_household),
+                retention_credit_per_household=float(retention_credit_per_household),
+                operational_cost_per_year=float(operational_cost_per_year),
+                price_df=price_df,
+                windows_df=windows_df,
             )
 
             st.subheader("Benefits (annualized)")
