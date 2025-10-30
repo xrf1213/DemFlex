@@ -1,0 +1,58 @@
+%%{init: {"theme":"default","themeVariables":{"fontSize":"24px","fontFamily":"Arial, sans-serif"}} }%%
+graph LR
+
+  %% Sidebar: config and uploads
+  subgraph Sidebar
+    SB[Config and uploads]
+  end
+
+  %% Ingest: read and align
+  subgraph Ingest
+    LD[load_df MW]
+    PR[price_df USD per MWh]
+    AL[aligned price_df within load range]
+  end
+
+  %% Peaks: select events
+  subgraph Peaks
+    TD[days_df]
+    WN[windows_df]
+  end
+  PIN[Peaks inputs]
+
+  %% Impact: aggregate reduction
+  subgraph Impact
+    PA[participants]
+    DT[deltaT thermostat setpoint]
+    RP[reduced_peak_MW]
+  end
+  IIN[Impact inputs]
+
+  %% Economics: benefits and costs
+  subgraph Economics
+    BC[capacity benefit]
+    BE[energy benefit]
+    CT[costs]
+    CF[cashflow]
+  end
+  EIN[Econ inputs]
+
+  %% Data flow
+  SB --> LD
+  SB --> PR
+  PR --> AL
+  LD --> TD --> WN
+  PIN --> TD
+  WN --> PA --> RP
+  DT --> RP
+  IIN --> PA
+  IIN --> DT
+  RP --> BC
+  WN --> BE
+  AL --> BE
+  PA --> CT
+  EIN --> BC
+  EIN --> CT
+  BC --> CF
+  BE --> CF
+  CT --> CF

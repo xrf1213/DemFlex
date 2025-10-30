@@ -1,0 +1,9 @@
+%%{init: {"theme":"default","themeVariables":{"fontSize":"24px","fontFamily":"Arial, sans-serif"}} }%%
+graph LR
+  S[Sidebar: Configure path; upload load/price; choose zones]
+  P[Peaks: Filter summer months; pick Top D days and best K-hour windows]
+  I[Impact: Compute participants and DeltaT; estimate per-device kW and aggregate MW]
+  E[Economics: Use capacity $/MW-yr and hourly $/MWh; compute participant-based costs and cashflow]
+
+  S --> P --> I --> E
+
