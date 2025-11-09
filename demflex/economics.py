@@ -21,6 +21,10 @@ def economics_from_peak(
     operational_cost_per_year: float = 0.0,
     price_df: Optional[pd.DataFrame] = None,
     windows_df: Optional[pd.DataFrame] = None,
+    # Optional battery charging inputs
+    charge_hours_df: Optional[pd.DataFrame] = None,
+    charge_power_MW: Optional[float] = None,
+    round_trip_efficiency: float = 1.0,
 ) -> Dict[str, Any]:
     """Custom economics based on Impact results (peak reduction in MW).
 
@@ -48,7 +52,8 @@ def economics_from_peak(
     energy_saved_MWh = reduced_peak_MW * total_event_hours
 
     # Energy benefit: prefer hourly price series during event hours; fallback to flat rate if provided
-    energy_benefit = 0.0
+    energy_benefit_gross = 0.0
+    charge_cost = 0.0
     matched_hours = 0
     avg_energy_price_per_MWh = None
     if price_df is not None and windows_df is not None and reduced_peak_MW > 0 and total_event_hours > 0:
@@ -68,16 +73,33 @@ def economics_from_peak(
             avg_energy_price_per_MWh = float(merged["price_per_MWh"].astype(float).mean())
             matched_hours = len(merged)
             # Sum benefit across event hours: MW * $/MWh
-            energy_benefit = float((reduced_peak_MW * merged["price_per_MWh"]).sum())
+            energy_benefit_gross = float((reduced_peak_MW * merged["price_per_MWh"]).sum())
         else:
-            energy_benefit = 0.0
+            energy_benefit_gross = 0.0
     elif per_energy_value_per_MWh is not None:
         # Flat rate fallback
-        energy_benefit = energy_saved_MWh * float(per_energy_value_per_MWh)
+        energy_benefit_gross = energy_saved_MWh * float(per_energy_value_per_MWh)
         avg_energy_price_per_MWh = float(per_energy_value_per_MWh)
         matched_hours = int(total_event_hours)
 
-    total_benefit = capacity_benefit + energy_benefit
+    # Charging cost (optional): sum over charge hours of (charge_power_MW × price_per_MWh)
+    matched_charge_hours = 0
+    if price_df is not None and charge_hours_df is not None and (charge_power_MW or 0.0) > 0:
+        prices = price_df.copy()[["ts", "price_per_MWh"]]
+        ch = charge_hours_df.copy()[["ts"]]
+        ch["ts"] = pd.to_datetime(ch["ts"])  # keep tz as-is
+        merged_ch = ch.merge(prices, on="ts", how="left").dropna(subset=["price_per_MWh"])  # skip missing
+        if not merged_ch.empty:
+            matched_charge_hours = len(merged_ch)
+            # If RTE != 1, the grid energy required increases; model simply by dividing by RTE
+            rte = float(round_trip_efficiency) if round_trip_efficiency and round_trip_efficiency > 0 else 1.0
+            effective_charge_MW = float(charge_power_MW) / rte
+            charge_cost = float((effective_charge_MW * merged_ch["price_per_MWh"]).sum())
+        else:
+            charge_cost = 0.0
+
+    energy_benefit_net = energy_benefit_gross - charge_cost
+    total_benefit = capacity_benefit + energy_benefit_net
 
     benefits_table = pd.DataFrame([
         {"component": "Reduced peak (MW)", "value": round(reduced_peak_MW, 6)},
@@ -85,7 +107,9 @@ def economics_from_peak(
         {"component": "Capacity benefit ($/yr)", "value": round(capacity_benefit, 2)},
         {"component": "Energy saved (MWh/yr)", "value": round(energy_saved_MWh, 6)},
         {"component": "Avg energy price ($/MWh)", "value": round(avg_energy_price_per_MWh or 0.0, 4)},
-        {"component": "Energy benefit ($/yr)", "value": round(energy_benefit, 2)},
+        {"component": "Energy benefit (gross $/yr)", "value": round(energy_benefit_gross, 2)},
+        {"component": "Charging cost ($/yr)", "value": round(charge_cost, 2)},
+        {"component": "Energy benefit (net $/yr)", "value": round(energy_benefit_net, 2)},
         {"component": "Total benefit ($/yr)", "value": round(total_benefit, 2)},
     ])
 
@@ -130,6 +154,7 @@ def economics_from_peak(
         "per_capacity_value_per_MWyr": float(per_capacity_value_per_MWyr),
         "per_energy_value_per_MWh": (None if per_energy_value_per_MWh is None else float(per_energy_value_per_MWh)),
         "participants": P,
+        "charge_power_MW": (None if charge_power_MW is None else float(charge_power_MW)),
         "cost_device_year0": float(cost_device),
         "cost_enroll_year0": float(cost_enroll),
         "cost_retention_annual": float(cost_retention),
@@ -137,6 +162,7 @@ def economics_from_peak(
         "total_cost_year0": float(total_year0),
         "total_cost_annual": float(total_annual),
         "matched_event_hours_with_price": int(matched_hours),
+        "matched_charge_hours_with_price": int(matched_charge_hours),
         "avg_energy_price_per_MWh": avg_energy_price_per_MWh,
     }
 

@@ -1,6 +1,6 @@
-# DemFlex — Smart Thermostat MVP
+# DemFlex — DR Planning MVP
 
-DemFlex is a Streamlit tool to identify summer demand response events (Peaks), estimate aggregate impact from smart thermostats (Impact), and review benefits/costs (Economics).
+DemFlex is a Streamlit tool to identify summer demand response events (Peaks), estimate aggregate impact from multiple technologies (Impact), and review benefits/costs (Economics). Supported technologies: Thermostats, Solar PV, and Battery Storage.
 
 ## Key Assumptions
 - Hourly load data is provided with a load zone column.
@@ -46,6 +46,20 @@ DemFlex is a Streamlit tool to identify summer demand response events (Peaks), e
 - Inputs: capacity value (`$/MW‑yr`) and costs — cost per device, enroll credit per household, retention credit per household (`$/yr`), operational cost per household per year (`$/household‑yr`).
 - Uses Impact reduced peak and Peaks’ event windows; energy benefit is computed by summing hourly prices (`$/MWh`) during event hours.
 - Outputs: benefits/costs tables and cumulative undiscounted cashflow over program life.
+
+## Technology Details
+
+- Thermostats
+  - Impact: sizes ΔT to meet target; applies a flat reduction during Peaks windows; no rebound.
+  - Economics: uses Peaks windows for event hours; capacity + hourly energy benefits.
+
+- Solar PV
+  - Impact: computes average PV area per household required to meet target using 0.21 kW/m²; applies reduction only during 10:00–16:00 across summer months (does not use Peaks windows).
+  - Economics: reuses capacity + energy logic over daily 10:00–16:00 summer windows (independent of Peaks).
+
+- Battery Storage (MVP)
+  - Impact: computes minimal per‑device power/energy to meet target over the event length; discharges during Peaks windows and shows charging in nearby 00:00–06:00 hours before each event (visualization).
+  - Economics: capacity + energy over Peaks windows; net energy = discharge benefit − charging cost from pre‑event 00:00–06:00 hours (assumes round‑trip efficiency = 1.0 by default).
 
 ## Current Computation Logic
 

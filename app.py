@@ -192,195 +192,411 @@ elif page == "Impact":
     total_households = st.number_input("Total households (region)", min_value=0, value=3_000_000, step=1000)
     penetration = st.number_input("Penetration rate", min_value=0.0, max_value=1.0, value=0.08, step=0.01)
     target_mw = st.number_input("Target capacity (MW)", min_value=0.0, value=float(50), step=1.0)
+    tech_choice = st.selectbox("Technology", options=["Thermostats", "Solar PV", "Battery Storage"], index=0)
     run_btn_impact = st.button("Compute Impact")
     if run_btn_impact:
-        windows_df = st.session_state.get("windows_df")
-        event_length_h = st.session_state.get("peaks_event_length_h")
-        if windows_df is None or event_length_h is None:
-            st.warning("Please run Peaks first (Find Summer Peaks) to select event windows, then return to Impact.")
-            st.stop()
-
         participants = int(total_households * penetration)
         if participants <= 0:
             st.warning("Participants computed as 0. Increase households or penetration.")
             st.stop()
 
-        base_deltaT = 4.0
-        base_per_device_kw = 0.512
         target_kW = target_mw * 1000.0
-        deltaT_raw = (target_kW / (participants * base_per_device_kw)) * base_deltaT
-        deltaT_required = max(2, min(6, int(math.ceil(deltaT_raw))))
-        per_device_kw = base_per_device_kw * (deltaT_required / base_deltaT)
-        aggregate_kW = participants * per_device_kw
-        aggregate_MW = aggregate_kW / 1000.0
 
-        # Build original vs after-event adjusted load (no rebound)
-        summer_mask = load_df["ts"].dt.month.isin(cfg.program.season_months)
-        summer_plot = load_df.loc[summer_mask, ["ts", "load_MW"]].copy()
-        summer_plot["ts"] = pd.to_datetime(summer_plot["ts"]).dt.tz_localize(None)
-        summer_plot["load_MW_after"] = summer_plot["load_MW"].astype(float)
-        for _, row in windows_df.iterrows():
-            start_tz = pd.to_datetime(row["start_ts"])  # tz-aware
-            for i in range(int(event_length_h)):
-                t = (start_tz + pd.Timedelta(hours=i)).tz_localize(None)
-                sel = summer_plot["ts"] == t
-                summer_plot.loc[sel, "load_MW_after"] = (summer_plot.loc[sel, "load_MW_after"] - aggregate_MW).clip(lower=0.0)
+        if tech_choice == "Thermostats":
+            windows_df = st.session_state.get("windows_df")
+            event_length_h = st.session_state.get("peaks_event_length_h")
+            if windows_df is None or event_length_h is None:
+                st.warning("Please run Peaks first (Find Summer Peaks) to select event windows, then return to Impact.")
+                st.stop()
 
-        # Build red-point markers for event hours
-        win_hours = []
-        for _, row in windows_df.iterrows():
-            start = pd.to_datetime(row["start_ts"]).tz_localize(None)
-            for i in range(int(event_length_h)):
-                t = start + pd.Timedelta(hours=i)
-                match = summer_plot.loc[summer_plot["ts"] == t, "load_MW"]
-                val = float(match.iloc[0]) if not match.empty else None
-                win_hours.append({"ts": t, "load_MW": val})
-        hours_plot = pd.DataFrame(win_hours)
+            base_deltaT = 4.0
+            base_per_device_kw = 0.512
+            deltaT_raw = (target_kW / (participants * base_per_device_kw)) * base_deltaT
+            deltaT_required = max(2, min(6, int(math.ceil(deltaT_raw))))
+            per_device_kw = base_per_device_kw * (deltaT_required / base_deltaT)
+            aggregate_kW = participants * per_device_kw
+            aggregate_MW = aggregate_kW / 1000.0
 
-        # Persist for downstream (Economics page still reads ΔT/target and plots)
-        st.session_state["impact_deltaT_F"] = float(deltaT_required)
-        st.session_state["impact_target_kW"] = float(target_kW)
-        st.session_state["impact_summer_plot"] = summer_plot
-        st.session_state["impact_hours_plot"] = hours_plot
-        st.session_state["impact_participants"] = participants
-        st.session_state["impact_per_device_kw"] = float(per_device_kw)
-        st.session_state["impact_aggregate_MW"] = float(aggregate_MW)
+            # Build original vs after-event adjusted load (no rebound)
+            summer_mask = load_df["ts"].dt.month.isin(cfg.program.season_months)
+            summer_plot = load_df.loc[summer_mask, ["ts", "load_MW"]].copy()
+            summer_plot["ts"] = pd.to_datetime(summer_plot["ts"]).dt.tz_localize(None)
+            summer_plot["load_MW_after"] = summer_plot["load_MW"].astype(float)
+            for _, row in windows_df.iterrows():
+                start_tz = pd.to_datetime(row["start_ts"])  # tz-aware
+                for i in range(int(event_length_h)):
+                    t = (start_tz + pd.Timedelta(hours=i)).tz_localize(None)
+                    sel = summer_plot["ts"] == t
+                    summer_plot.loc[sel, "load_MW_after"] = (summer_plot.loc[sel, "load_MW_after"] - aggregate_MW).clip(lower=0.0)
 
-        # Summary metrics
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("Participants", f"{participants:,}")
-        with m2:
-            st.metric("ΔT required (°F)", f"{deltaT_required}")
-        with m3:
-            st.metric("Per-device reduction (kW)", f"{per_device_kw:.3f}")
-        with m4:
-            st.metric("Aggregate per hour (MW)", f"{aggregate_MW:.3f}")
+            # Build red-point markers for event hours
+            win_hours = []
+            for _, row in windows_df.iterrows():
+                start = pd.to_datetime(row["start_ts"]).tz_localize(None)
+                for i in range(int(event_length_h)):
+                    t = start + pd.Timedelta(hours=i)
+                    match = summer_plot.loc[summer_plot["ts"] == t, "load_MW"]
+                    val = float(match.iloc[0]) if not match.empty else None
+                    win_hours.append({"ts": t, "load_MW": val})
+            hours_plot = pd.DataFrame(win_hours)
 
-        st.subheader("Summer Load: original vs after-event")
-        base_orig = alt.Chart(summer_plot).mark_line(color="#1f77b4").encode(
-            x=alt.X("ts:T", title="Time"),
-            y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
-        )
-        base_after = alt.Chart(summer_plot).mark_line(color="green", strokeDash=[4,4]).encode(
-            x="ts:T",
-            y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
-        )
-        base_points = alt.Chart(hours_plot).mark_point(color="red", size=60).encode(
-            x="ts:T",
-            y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
-            tooltip=["ts:T", "load_MW:Q"],
-        )
+            # Persist for downstream (Economics page still reads ΔT/target and plots)
+            st.session_state["impact_tech"] = "thermostats"
+            st.session_state["impact_deltaT_F"] = float(deltaT_required)
+            st.session_state["impact_target_kW"] = float(target_kW)
+            st.session_state["impact_summer_plot"] = summer_plot
+            st.session_state["impact_hours_plot"] = hours_plot
+            st.session_state["impact_participants"] = participants
+            st.session_state["impact_per_device_kw"] = float(per_device_kw)
+            st.session_state["impact_aggregate_MW"] = float(aggregate_MW)
 
-        # Overview + detail with brush selection for zooming
-        brush = alt.selection_interval(encodings=["x"])
-        overview = alt.layer(base_orig, base_after).add_selection(brush).properties(height=120)
-        detail = alt.layer(
-            base_orig.transform_filter(brush),
-            base_after.transform_filter(brush),
-            base_points.transform_filter(brush),
-        ).properties(height=300)
+            # Summary metrics
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Participants", f"{participants:,}")
+            with m2:
+                st.metric("ΔT required (°F)", f"{deltaT_required}")
+            with m3:
+                st.metric("Per-device reduction (kW)", f"{per_device_kw:.3f}")
+            with m4:
+                st.metric("Aggregate per hour (MW)", f"{aggregate_MW:.3f}")
 
-        st.altair_chart(alt.vconcat(detail, overview).resolve_scale(y="shared"), use_container_width=True)
-
-        # Focus view: single-day before vs after
-        st.subheader("Focused Day: before vs after")
-        day_options = sorted(pd.to_datetime(windows_df["date"]).dt.strftime("%Y-%m-%d").unique().tolist())
-        # Persist and update focused day via a form to avoid heavy reruns on every change
-        default_focus = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
-        with st.form("focus_day_form_compute"):
-            focus_day_sel = st.selectbox("Select a day", options=day_options, index=(day_options.index(default_focus) if default_focus in day_options else 0), key="impact_focus_day_select_compute")
-            submit_day = st.form_submit_button("Update")
-        if submit_day:
-            st.session_state["impact_focus_day"] = focus_day_sel
-        focus_day = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
-        if focus_day is None:
-            st.info("No day available to display.")
-            focus_day = day_options[0] if day_options else None
-        day_dt = pd.to_datetime(focus_day) if focus_day else None
-        day_mask = summer_plot["ts"].dt.normalize() == day_dt
-        day_df = summer_plot.loc[day_mask, ["ts", "load_MW", "load_MW_after"]]
-        # Event hours for the selected day
-        hours_day = hours_plot.loc[hours_plot["ts"].dt.normalize() == day_dt] if not hours_plot.empty else hours_plot
-
-        day_orig = alt.Chart(day_df).mark_line(color="#1f77b4").encode(
-            x=alt.X("ts:T", title="Time"),
-            y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
-        )
-        day_after = alt.Chart(day_df).mark_line(color="green", strokeDash=[4,4]).encode(
-            x="ts:T",
-            y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
-        )
-        day_points = alt.Chart(hours_day).mark_point(color="red", size=80).encode(
-            x="ts:T",
-            y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
-            tooltip=["ts:T", "load_MW:Q"],
-        ) if not hours_day.empty else None
-
-        if day_points is not None:
-            st.altair_chart(alt.layer(day_orig, day_after, day_points).resolve_scale(y="shared"), use_container_width=True)
-        else:
-            st.altair_chart(alt.layer(day_orig, day_after).resolve_scale(y="shared"), use_container_width=True)
-
-# Render persisted Impact charts when changing selections (avoid recompute)
-elif page == "Impact":
-    if 'impact_summer_plot' in st.session_state and 'impact_hours_plot' in st.session_state and 'windows_df' in st.session_state:
-        summer_plot = st.session_state['impact_summer_plot']
-        hours_plot = st.session_state['impact_hours_plot']
-        windows_df = st.session_state['windows_df']
-        st.subheader("Summer Load: original vs after-event")
-        base_orig = alt.Chart(summer_plot).mark_line(color="#1f77b4").encode(
-            x=alt.X("ts:T", title="Time"),
-            y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
-        )
-        base_after = alt.Chart(summer_plot).mark_line(color="green", strokeDash=[4,4]).encode(
-            x="ts:T",
-            y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
-        )
-        base_points = alt.Chart(hours_plot).mark_point(color="red", size=60).encode(
-            x="ts:T",
-            y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
-            tooltip=["ts:T", "load_MW:Q"],
-        )
-        brush = alt.selection_interval(encodings=["x"])
-        overview = alt.layer(base_orig, base_after).add_selection(brush).properties(height=120)
-        detail = alt.layer(
-            base_orig.transform_filter(brush),
-            base_after.transform_filter(brush),
-            base_points.transform_filter(brush),
-        ).properties(height=300)
-        st.altair_chart(alt.vconcat(detail, overview).resolve_scale(y="shared"), use_container_width=True)
-
-        st.subheader("Focused Day: before vs after")
-        day_options = sorted(pd.to_datetime(windows_df["date"]).dt.strftime("%Y-%m-%d").unique().tolist())
-        default_focus = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
-        with st.form("focus_day_form_persist"):
-            focus_day_sel = st.selectbox("Select a day", options=day_options, index=(day_options.index(default_focus) if default_focus in day_options else 0), key="impact_focus_day_select_persist")
-            submit_day = st.form_submit_button("Update")
-        if submit_day:
-            st.session_state["impact_focus_day"] = focus_day_sel
-        focus_day = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
-        day_dt = pd.to_datetime(focus_day) if focus_day else None
-        day_mask = summer_plot["ts"].dt.normalize() == day_dt
-        day_df = summer_plot.loc[day_mask, ["ts", "load_MW", "load_MW_after"]].copy()
-        hours_day = hours_plot.loc[hours_plot["ts"].dt.normalize() == day_dt] if not hours_plot.empty else hours_plot
-        day_orig = alt.Chart(day_df).mark_line(color="#1f77b4").encode(
-            x=alt.X("ts:T", title="Time"),
-            y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
-        )
-        day_after = alt.Chart(day_df).mark_line(color="green", strokeDash=[4,4]).encode(
-            x="ts:T",
-            y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
-        )
-        if not hours_day.empty:
-            day_points = alt.Chart(hours_day).mark_point(color="red", size=80).encode(
+            st.subheader("Summer Load: original vs after-event")
+            base_orig = alt.Chart(summer_plot).mark_line(color="#1f77b4").encode(
+                x=alt.X("ts:T", title="Time"),
+                y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
+            )
+            base_after = alt.Chart(summer_plot).mark_line(color="green", strokeDash=[4,4]).encode(
+                x="ts:T",
+                y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
+            )
+            base_points = alt.Chart(hours_plot).mark_point(color="red", size=60).encode(
                 x="ts:T",
                 y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
                 tooltip=["ts:T", "load_MW:Q"],
             )
-            st.altair_chart(alt.layer(day_orig, day_after, day_points).resolve_scale(y="shared"), use_container_width=True)
-        else:
-            st.altair_chart(alt.layer(day_orig, day_after).resolve_scale(y="shared"), use_container_width=True)
+
+            # Overview + detail with brush selection for zooming
+            brush = alt.selection_interval(encodings=["x"])
+            overview = alt.layer(base_orig, base_after).add_selection(brush).properties(height=120)
+            detail = alt.layer(
+                base_orig.transform_filter(brush),
+                base_after.transform_filter(brush),
+                base_points.transform_filter(brush),
+            ).properties(height=300)
+
+            st.altair_chart(alt.vconcat(detail, overview).resolve_scale(y="shared"), use_container_width=True)
+
+            # Focus view: single-day before vs after
+            st.subheader("Focused Day: before vs after")
+            day_options = sorted(pd.to_datetime(windows_df["date"]).dt.strftime("%Y-%m-%d").unique().tolist())
+            # Persist and update focused day via a form to avoid heavy reruns on every change
+            default_focus = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
+            with st.form("focus_day_form_compute"):
+                focus_day_sel = st.selectbox("Select a day", options=day_options, index=(day_options.index(default_focus) if default_focus in day_options else 0), key="impact_focus_day_select_compute")
+                submit_day = st.form_submit_button("Update")
+            if submit_day:
+                st.session_state["impact_focus_day"] = focus_day_sel
+            focus_day = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
+            if focus_day is None:
+                st.info("No day available to display.")
+                focus_day = day_options[0] if day_options else None
+            day_dt = pd.to_datetime(focus_day) if focus_day else None
+            day_mask = summer_plot["ts"].dt.normalize() == day_dt
+            day_df = summer_plot.loc[day_mask, ["ts", "load_MW", "load_MW_after"]]
+            # Event hours for the selected day
+            hours_day = hours_plot.loc[hours_plot["ts"].dt.normalize() == day_dt] if not hours_plot.empty else hours_plot
+
+            day_orig = alt.Chart(day_df).mark_line(color="#1f77b4").encode(
+                x=alt.X("ts:T", title="Time"),
+                y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
+            )
+            day_after = alt.Chart(day_df).mark_line(color="green", strokeDash=[4,4]).encode(
+                x="ts:T",
+                y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
+            )
+            day_points = alt.Chart(hours_day).mark_point(color="red", size=80).encode(
+                x="ts:T",
+                y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
+                tooltip=["ts:T", "load_MW:Q"],
+            ) if not hours_day.empty else None
+
+            if day_points is not None:
+                st.altair_chart(alt.layer(day_orig, day_after, day_points).resolve_scale(y="shared"), use_container_width=True)
+            else:
+                st.altair_chart(alt.layer(day_orig, day_after).resolve_scale(y="shared"), use_container_width=True)
+
+        elif tech_choice == "Battery Storage":
+            # Require Peaks for event windows and length
+            windows_df = st.session_state.get("windows_df")
+            event_length_h = st.session_state.get("peaks_event_length_h")
+            if windows_df is None or event_length_h is None:
+                st.warning("Please run Peaks first (Find Summer Peaks) to select event windows, then return to Impact.")
+                st.stop()
+
+            # Minimal per-device requirements to meet target capacity for full event length
+            per_device_power_kW = target_kW / participants if participants > 0 else 0.0
+            per_device_energy_kWh = per_device_power_kW * float(event_length_h)
+            aggregate_kW = participants * per_device_power_kW
+            aggregate_MW = aggregate_kW / 1000.0
+
+            # Build original vs after-event adjusted load with discharge during events and charge prior night hours
+            summer_mask = load_df["ts"].dt.month.isin(cfg.program.season_months)
+            summer_plot = load_df.loc[summer_mask, ["ts", "load_MW"]].copy()
+            summer_plot["ts"] = pd.to_datetime(summer_plot["ts"]).dt.tz_localize(None)
+            summer_plot["load_MW_after"] = summer_plot["load_MW"].astype(float)
+
+            discharge_marks = []
+            charge_marks = []
+
+            # Helper to choose charging hours before each event (default night 00:00–06:00, nearest first)
+            def choose_charge_hours(start_naive: pd.Timestamp, hours_needed: int) -> list[pd.Timestamp]:
+                chosen: list[pd.Timestamp] = []
+                start_hour = int(start_naive.hour)
+                day0 = start_naive.normalize()
+                # Build candidate hours in descending recency before event
+                candidates: list[pd.Timestamp] = []
+                # same day early morning before event (00..06 and < start_hour)
+                for h in range(6, -1, -1):
+                    ts = day0 + pd.Timedelta(hours=h)
+                    if ts < start_naive:
+                        candidates.append(ts)
+                # previous days early morning (up to 2 days back)
+                for d in [1, 2]:
+                    day = day0 - pd.Timedelta(days=d)
+                    for h in range(6, -1, -1):
+                        candidates.append(day + pd.Timedelta(hours=h))
+                # Select nearest hours first
+                for ts in candidates:
+                    if len(chosen) >= hours_needed:
+                        break
+                    chosen.append(ts)
+                return chosen[:hours_needed]
+
+            # Apply discharge during event windows and schedule charging before them
+            for _, row in windows_df.iterrows():
+                start_tz = pd.to_datetime(row["start_ts"])  # tz-aware
+                start = start_tz.tz_localize(None)
+                for i in range(int(event_length_h)):
+                    t = start + pd.Timedelta(hours=i)
+                    sel = summer_plot["ts"] == t
+                    if sel.any():
+                        summer_plot.loc[sel, "load_MW_after"] = (
+                            summer_plot.loc[sel, "load_MW_after"] - aggregate_MW
+                        ).clip(lower=0.0)
+                        # mark discharge hour
+                        match = summer_plot.loc[sel, "load_MW"]
+                        val = float(match.iloc[0]) if not match.empty else None
+                        discharge_marks.append({"ts": t, "load_MW": val})
+
+                # charging hours equal to event length (symmetrical power), default RTE = 1 for display
+                charge_hours = choose_charge_hours(start, int(math.ceil(float(event_length_h))))
+                for t in charge_hours:
+                    sel = summer_plot["ts"] == t
+                    if sel.any():
+                        summer_plot.loc[sel, "load_MW_after"] = summer_plot.loc[sel, "load_MW_after"] + aggregate_MW
+                        match = summer_plot.loc[sel, "load_MW"]
+                        val = float(match.iloc[0]) if not match.empty else None
+                        charge_marks.append({"ts": t, "load_MW": val})
+
+            discharge_plot = pd.DataFrame(discharge_marks)
+            charge_plot = pd.DataFrame(charge_marks)
+
+            # Persist results
+            st.session_state["impact_tech"] = "battery"
+            st.session_state["impact_target_kW"] = float(target_kW)
+            st.session_state["impact_summer_plot"] = summer_plot
+            st.session_state["impact_hours_plot_discharge"] = discharge_plot
+            st.session_state["impact_hours_plot_charge"] = charge_plot
+            st.session_state["impact_participants"] = participants
+            st.session_state["impact_batt_power_kW"] = float(per_device_power_kW)
+            st.session_state["impact_batt_energy_kWh"] = float(per_device_energy_kWh)
+            st.session_state["impact_aggregate_MW"] = float(aggregate_MW)
+
+            # Summary metrics (Battery)
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Participants", f"{participants:,}")
+            with m2:
+                st.metric("Power/device (kW)", f"{per_device_power_kW:.3f}")
+            with m3:
+                st.metric("Energy/device (kWh)", f"{per_device_energy_kWh:.2f}")
+            with m4:
+                st.metric("Aggregate (MW)", f"{aggregate_MW:.3f}")
+
+            st.subheader("Summer Load: charge (+) and discharge (−)")
+            base_orig = alt.Chart(summer_plot).mark_line(color="#1f77b4").encode(
+                x=alt.X("ts:T", title="Time"),
+                y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
+            )
+            base_after = alt.Chart(summer_plot).mark_line(color="green", strokeDash=[4,4]).encode(
+                x="ts:T",
+                y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
+            )
+            pts_dis = alt.Chart(discharge_plot).mark_point(color="red", size=60).encode(
+                x="ts:T",
+                y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
+                tooltip=["ts:T", "load_MW:Q"],
+            ) if not discharge_plot.empty else None
+            pts_chg = alt.Chart(charge_plot).mark_point(color="orange", size=60).encode(
+                x="ts:T",
+                y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
+                tooltip=["ts:T", "load_MW:Q"],
+            ) if not charge_plot.empty else None
+
+            brush = alt.selection_interval(encodings=["x"])
+            overview = alt.layer(base_orig, base_after).add_selection(brush).properties(height=120)
+            layers = [base_orig.transform_filter(brush), base_after.transform_filter(brush)]
+            if pts_dis is not None:
+                layers.append(pts_dis.transform_filter(brush))
+            if pts_chg is not None:
+                layers.append(pts_chg.transform_filter(brush))
+            detail = alt.layer(*layers).properties(height=300)
+            st.altair_chart(alt.vconcat(detail, overview).resolve_scale(y="shared"), use_container_width=True)
+
+            # Focus day view
+            st.subheader("Focused Day: before vs after")
+            day_options = sorted(pd.to_datetime(windows_df["date"]).dt.strftime("%Y-%m-%d").unique().tolist())
+            default_focus = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
+            with st.form("focus_day_form_batt"):
+                focus_day_sel = st.selectbox("Select a day", options=day_options, index=(day_options.index(default_focus) if default_focus in day_options else 0), key="impact_focus_day_select_batt")
+                submit_day = st.form_submit_button("Update")
+            if submit_day:
+                st.session_state["impact_focus_day"] = focus_day_sel
+            focus_day = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
+            day_dt = pd.to_datetime(focus_day) if focus_day else None
+            day_mask = summer_plot["ts"].dt.normalize() == day_dt
+            day_df = summer_plot.loc[day_mask, ["ts", "load_MW", "load_MW_after"]].copy()
+            dis_day = discharge_plot.loc[discharge_plot["ts"].dt.normalize() == day_dt] if not discharge_plot.empty else discharge_plot
+            chg_day = charge_plot.loc[charge_plot["ts"].dt.normalize() == day_dt] if not charge_plot.empty else charge_plot
+
+            day_orig = alt.Chart(day_df).mark_line(color="#1f77b4").encode(
+                x=alt.X("ts:T", title="Time"),
+                y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
+            )
+            day_after = alt.Chart(day_df).mark_line(color="green", strokeDash=[4,4]).encode(
+                x="ts:T",
+                y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
+            )
+            layers_day = [day_orig, day_after]
+            if not dis_day.empty:
+                layers_day.append(
+                    alt.Chart(dis_day).mark_point(color="red", size=80).encode(
+                        x="ts:T", y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)), tooltip=["ts:T", "load_MW:Q"]
+                    )
+                )
+            if not chg_day.empty:
+                layers_day.append(
+                    alt.Chart(chg_day).mark_point(color="orange", size=80).encode(
+                        x="ts:T", y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)), tooltip=["ts:T", "load_MW:Q"]
+                    )
+                )
+            st.altair_chart(alt.layer(*layers_day).resolve_scale(y="shared"), use_container_width=True)
+
+        else:  # Solar PV
+            PER_M2_KW = 0.21
+            if target_kW <= 0:
+                st.warning("Target capacity must be greater than 0 for Solar PV.")
+                st.stop()
+
+            # Area per household required to meet aggregate target
+            area_m2_per_household = target_kW / (participants * PER_M2_KW)
+            per_household_kw = PER_M2_KW * area_m2_per_household  # equals target_kW / participants
+            aggregate_kW = participants * per_household_kw
+            aggregate_MW = aggregate_kW / 1000.0
+
+            # Build original vs after adjustment for solar active hours (10:00–16:00)
+            summer_mask = load_df["ts"].dt.month.isin(cfg.program.season_months)
+            summer_plot = load_df.loc[summer_mask, ["ts", "load_MW"]].copy()
+            summer_plot["ts"] = pd.to_datetime(summer_plot["ts"]).dt.tz_localize(None)
+            summer_plot["load_MW_after"] = summer_plot["load_MW"].astype(float)
+            hours_series = summer_plot["ts"].dt.hour
+            solar_mask = (hours_series >= 10) & (hours_series <= 16)
+            summer_plot.loc[solar_mask, "load_MW_after"] = (
+                summer_plot.loc[solar_mask, "load_MW_after"] - aggregate_MW
+            ).clip(lower=0.0)
+
+            # Markers for solar hours
+            hours_plot = summer_plot.loc[solar_mask, ["ts", "load_MW"]].copy()
+
+            # Persist results for potential downstream use
+            st.session_state["impact_tech"] = "solar_pv"
+            st.session_state["impact_target_kW"] = float(target_kW)
+            st.session_state["impact_summer_plot"] = summer_plot
+            st.session_state["impact_hours_plot"] = hours_plot
+            st.session_state["impact_participants"] = participants
+            st.session_state["impact_per_device_kw"] = float(per_household_kw)
+            st.session_state["impact_aggregate_MW"] = float(aggregate_MW)
+            st.session_state["impact_solar_area_m2_per_household"] = float(area_m2_per_household)
+
+            # Summary metrics (Solar PV)
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Participants", f"{participants:,}")
+            with m2:
+                st.metric("Avg PV area/household (m²)", f"{area_m2_per_household:.2f}")
+            with m3:
+                st.metric("Per-household capacity (kW)", f"{per_household_kw:.3f}")
+            with m4:
+                st.metric("Aggregate per hour (MW)", f"{aggregate_MW:.3f}")
+
+            st.subheader("Summer Load: original vs after (solar hours)")
+            base_orig = alt.Chart(summer_plot).mark_line(color="#1f77b4").encode(
+                x=alt.X("ts:T", title="Time"),
+                y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
+            )
+            base_after = alt.Chart(summer_plot).mark_line(color="green", strokeDash=[4,4]).encode(
+                x="ts:T",
+                y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
+            )
+            base_points = alt.Chart(hours_plot).mark_point(color="red", size=60).encode(
+                x="ts:T",
+                y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
+                tooltip=["ts:T", "load_MW:Q"],
+            )
+
+            brush = alt.selection_interval(encodings=["x"])
+            overview = alt.layer(base_orig, base_after).add_selection(brush).properties(height=120)
+            detail = alt.layer(
+                base_orig.transform_filter(brush),
+                base_after.transform_filter(brush),
+                base_points.transform_filter(brush),
+            ).properties(height=300)
+            st.altair_chart(alt.vconcat(detail, overview).resolve_scale(y="shared"), use_container_width=True)
+
+            # Focused day view based on solar hours (not event windows)
+            st.subheader("Focused Day: before vs after")
+            day_options = sorted(pd.to_datetime(summer_plot["ts"]).dt.strftime("%Y-%m-%d").unique().tolist())
+            default_focus = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
+            with st.form("focus_day_form_solar"):
+                focus_day_sel = st.selectbox("Select a day", options=day_options, index=(day_options.index(default_focus) if default_focus in day_options else 0), key="impact_focus_day_select_solar")
+                submit_day = st.form_submit_button("Update")
+            if submit_day:
+                st.session_state["impact_focus_day"] = focus_day_sel
+            focus_day = st.session_state.get("impact_focus_day", day_options[0] if day_options else None)
+            day_dt = pd.to_datetime(focus_day) if focus_day else None
+            day_mask = summer_plot["ts"].dt.normalize() == day_dt
+            day_df = summer_plot.loc[day_mask, ["ts", "load_MW", "load_MW_after"]].copy()
+            hours_day = hours_plot.loc[hours_plot["ts"].dt.normalize() == day_dt] if not hours_plot.empty else hours_plot
+
+            day_orig = alt.Chart(day_df).mark_line(color="#1f77b4").encode(
+                x=alt.X("ts:T", title="Time"),
+                y=alt.Y("load_MW:Q", title="Load (MW)", scale=alt.Scale(zero=False)),
+            )
+            day_after = alt.Chart(day_df).mark_line(color="green", strokeDash=[4,4]).encode(
+                x="ts:T",
+                y=alt.Y("load_MW_after:Q", scale=alt.Scale(zero=False)),
+            )
+            if not hours_day.empty:
+                day_points = alt.Chart(hours_day).mark_point(color="red", size=80).encode(
+                    x="ts:T",
+                    y=alt.Y("load_MW:Q", scale=alt.Scale(zero=False)),
+                    tooltip=["ts:T", "load_MW:Q"],
+                )
+                st.altair_chart(alt.layer(day_orig, day_after, day_points).resolve_scale(y="shared"), use_container_width=True)
+            else:
+                st.altair_chart(alt.layer(day_orig, day_after).resolve_scale(y="shared"), use_container_width=True)
+
 
 elif page == "Economics":
     # Inputs for economics values (capacity only; energy uses hourly prices)
@@ -431,15 +647,80 @@ elif page == "Economics":
         if econ_cfg is None:
             st.warning("Missing economics config; cannot compute economics.")
         else:
-            # Require Peaks completed to get events and length
-            windows_df = st.session_state.get("windows_df")
-            event_length_h = st.session_state.get("peaks_event_length_h")
-            if windows_df is None or event_length_h is None:
-                st.warning("Please complete Peaks first (Find Summer Peaks) to select event windows.")
-                st.stop()
-            events_per_year = len(windows_df)
+            # Determine event hours/windows based on selected technology from Impact
+            impact_tech = st.session_state.get("impact_tech", "thermostats")
 
-            # Require Impact completed to get reduced peak
+            if impact_tech == "solar_pv":
+                # Construct daily 10:00–16:00 windows for all summer days in the load data
+                summer_mask = load_df["ts"].dt.month.isin(cfg.program.season_months)
+                summer_ts = load_df.loc[summer_mask, ["ts"]].copy()
+                if summer_ts.empty:
+                    st.warning("No summer data to build Solar PV hours.")
+                    st.stop()
+                summer_ts["date"] = summer_ts["ts"].dt.tz_localize(None).dt.normalize()
+                summer_ts["hour"] = summer_ts["ts"].dt.hour
+                starts = summer_ts.loc[summer_ts["hour"] == 10].copy()
+                if starts.empty:
+                    st.warning("No 10:00 timestamps found in summer data to build Solar PV hours.")
+                    st.stop()
+                # Preserve timezone-aware timestamps by avoiding .values
+                windows_df_use = pd.DataFrame({
+                    "date": starts["date"],
+                    "start_ts": starts["ts"],  # tz-aware
+                    "end_ts": starts["ts"] + pd.Timedelta(hours=7),
+                    "duration_h": 7,
+                })
+                events_per_year = len(windows_df_use)
+                event_length_h = 7
+            else:
+                # Thermostat/Battery path continues to use Peaks-selected event windows
+                windows_df_use = st.session_state.get("windows_df")
+                event_length_h = st.session_state.get("peaks_event_length_h")
+                if windows_df_use is None or event_length_h is None:
+                    st.warning("Please complete Peaks first (Find Summer Peaks) to select event windows.")
+                    st.stop()
+                events_per_year = len(windows_df_use)
+
+            # Build optional battery charging hours for cost deduction
+            charge_hours_df = None
+            charge_power_MW = None
+            if impact_tech == "battery":
+                aggregate_MW_val = st.session_state.get("impact_aggregate_MW")
+                if aggregate_MW_val is None or float(aggregate_MW_val) <= 0:
+                    st.warning("Battery aggregate MW missing from Impact; please re-run Impact for Battery.")
+                    st.stop()
+                charge_power_MW = float(aggregate_MW_val)
+
+                def _choose_charge_hours_tzaware(start_tz: pd.Timestamp, hours_needed: int) -> list[pd.Timestamp]:
+                    chosen: list[pd.Timestamp] = []
+                    midnight = start_tz.normalize()  # tz-aware midnight
+                    # Same-day early morning before start
+                    for h in range(6, -1, -1):
+                        ts = midnight + pd.Timedelta(hours=h)
+                        if ts < start_tz:
+                            chosen.append(ts)
+                            if len(chosen) >= hours_needed:
+                                return chosen
+                    # Previous days early morning until filled (up to 7 days back)
+                    d = 1
+                    while len(chosen) < hours_needed and d <= 7:
+                        day = midnight - pd.Timedelta(days=d)
+                        for h in range(6, -1, -1):
+                            chosen.append(day + pd.Timedelta(hours=h))
+                            if len(chosen) >= hours_needed:
+                                break
+                        d += 1
+                    return chosen[:hours_needed]
+
+                charge_ts: list[pd.Timestamp] = []
+                hours_needed_each = int(math.ceil(float(event_length_h)))
+                for _, row in windows_df_use.iterrows():
+                    start_tz = pd.to_datetime(row["start_ts"])  # tz-aware
+                    charge_ts.extend(_choose_charge_hours_tzaware(start_tz, hours_needed_each))
+                if charge_ts:
+                    charge_hours_df = pd.DataFrame({"ts": pd.to_datetime(charge_ts)})
+
+            # Require Impact completed to get reduced peak and participants
             reduced_peak_MW = st.session_state.get("impact_aggregate_MW")
             participants = st.session_state.get("impact_participants")
             if reduced_peak_MW is None:
@@ -464,7 +745,10 @@ elif page == "Economics":
                 retention_credit_per_household=float(retention_credit_per_household),
                 operational_cost_per_year=float(operational_cost_per_year),
                 price_df=price_df,
-                windows_df=windows_df,
+                windows_df=windows_df_use,
+                charge_hours_df=charge_hours_df,
+                charge_power_MW=charge_power_MW,
+                round_trip_efficiency=1.0,
             )
 
             st.subheader("Benefits (annualized)")
