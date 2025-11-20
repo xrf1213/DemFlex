@@ -17,12 +17,13 @@ from demflex import peaks as peaks_mod
 import importlib
 import demflex.economics as economics_mod
 
+from demflex import optimization
 
 st.set_page_config(page_title="DemFlex", layout="wide")
 st.title("DemFlex")
 
 # Top-level view switch (outside the sidebar)
-page = st.radio("View", ["Peaks", "Impact", "Economics"], index=0, horizontal=True)
+page = st.radio("View", ["Peaks", "Impact", "Economics", "Optimization"], index=0, horizontal=True)
 
 with st.sidebar:
     st.header("Configuration")
@@ -769,4 +770,141 @@ elif page == "Economics":
             with st.expander("Intermediates"):
                 st.json(econ_res["intermediates"], expanded=False)
 
-# (removed duplicate persisted Impact renderer)
+
+elif page == "Optimization":
+    st.header("AI Optimization (Combinations)")
+    st.markdown("Find the best **combination of technologies** to maximize Net Benefit.")
+
+    # Inputs
+    col1, col2 = st.columns(2)
+    with col1:
+        min_target_mw = st.number_input("Minimum Target Peak Reduction (MW)", value=50.0, step=5.0)
+        total_households = st.number_input("Total households", min_value=0, value=3_000_000, step=1000,
+                                           key="opt_households")
+    with col2:
+        n_trials = st.number_input("Optimization Trials (Iterations)", value=50, step=10, min_value=10, max_value=500)
+
+    # Tech specific penetration rates
+    st.markdown("##### Penetration Rates per Technology")
+    st.caption("If a technology is selected in a combination, it will use these participation assumptions.")
+
+    p_col1, p_col2, p_col3 = st.columns(3)
+    with p_col1:
+        pen_batt = st.number_input("Battery Penetration", min_value=0.0, max_value=1.0, value=0.02, step=0.01)
+    with p_col2:
+        pen_therm = st.number_input("Thermostat Penetration", min_value=0.0, max_value=1.0, value=0.15, step=0.01)
+    with p_col3:
+        pen_solar = st.number_input("Solar Penetration", min_value=0.0, max_value=1.0, value=0.10, step=0.01)
+
+    participants_map = {
+        "Battery Storage": int(total_households * pen_batt),
+        "Thermostats": int(total_households * pen_therm),
+        "Solar PV": int(total_households * pen_solar)
+    }
+
+    # Display participant counts
+    st.markdown(
+        f"**Potential Participants:** "
+        f"{participants_map['Battery Storage']:,} | "
+        f"{participants_map['Thermostats']:,} | "
+        f"{participants_map['Solar PV']:,}"
+    )
+
+    # Advanced Configuration for Search Ranges
+    with st.expander("Advanced Search Space Configuration", expanded=False):
+        st.caption("Define the ranges for the AI to explore.")
+
+        st.markdown("**Event Settings (Shared)**")
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            top_days_min = st.number_input("Min Event Days", value=10, min_value=1, max_value=90)
+            event_len_min = st.number_input("Min Duration (h)", value=2, min_value=1, max_value=12)
+        with ac2:
+            top_days_max = st.number_input("Max Event Days", value=60, min_value=top_days_min, max_value=100)
+            event_len_max = st.number_input("Max Duration (h)", value=6, min_value=event_len_min, max_value=24)
+
+        st.markdown("**Battery Storage Ranges**")
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1:
+            batt_cap_min = st.number_input("Min Capacity (kWh)", value=10.0, step=0.5)
+            batt_cap_max = st.number_input("Max Capacity (kWh)", value=20.0, step=0.5)
+        with bc2:
+            batt_kw_min = st.number_input("Min Power (kW)", value=3.0, step=0.5)
+            batt_kw_max = st.number_input("Max Power (kW)", value=7.0, step=0.5)
+        with bc3:
+            batt_dod_min = st.number_input("Min DoD", value=0.6, min_value=0.1, max_value=1.0, step=0.05)
+            batt_dod_max = st.number_input("Max DoD", value=0.95, min_value=batt_dod_min, max_value=1.0, step=0.05)
+
+        st.markdown("**Other Technologies**")
+        oc1, oc2 = st.columns(2)
+        with oc1:
+            t_min = st.number_input("Min Delta T (F)", value=1.0, step=0.5)
+            t_max = st.number_input("Max Delta T (F)", value=5.0, step=0.5)
+        with oc2:
+            s_min = st.number_input("Min Solar kW/home", value=3.0, step=0.5)
+            s_max = st.number_input("Max Solar kW/home", value=10.0, step=0.5)
+
+    if st.button("Run Optimization"):
+        if load_df.empty or price_df is None:
+            st.error("Please load data first.")
+        elif all(p == 0 for p in participants_map.values()):
+            st.error("All technologies have 0 participants. Please check inputs.")
+        else:
+            constraints = {
+                "top_days_min": top_days_min, "top_days_max": top_days_max,
+                "event_length_min": event_len_min, "event_length_max": event_len_max,
+                "batt_kwh_min": batt_cap_min, "batt_kwh_max": batt_cap_max,
+                "batt_kw_min": batt_kw_min, "batt_kw_max": batt_kw_max,
+                "batt_dod_min": batt_dod_min, "batt_dod_max": batt_dod_max,
+                "thermostat_delta_t_min": t_min, "thermostat_delta_t_max": t_max,
+                "solar_kw_min": s_min, "solar_kw_max": s_max
+            }
+
+            with st.spinner(f"Running {n_trials} iterations for combinations..."):
+                try:
+                    best_trial = optimization.run_optimization(
+                        load_df=load_df,
+                        price_df=price_df,
+                        config=cfg,
+                        min_target_mw=min_target_mw,
+                        participants_map=participants_map,
+                        constraints=constraints,
+                        n_trials=n_trials
+                    )
+
+                    st.success("Optimization Complete!")
+
+                    st.metric("Best Combination", best_trial.params.get("combination", "N/A"))
+
+                    m1, m2 = st.columns(2)
+                    with m1:
+                        st.metric("Max Total Net Benefit", f"${best_trial.value:,.2f}")
+                    with m2:
+                        reduced_mw = best_trial.user_attrs.get('reduced_peak_MW', 0)
+                        st.metric("Total Reduced Peak MW", f"{reduced_mw:.2f} MW")
+
+                    st.subheader("Optimal Configuration Details")
+
+                    # --- Start of modified display logic ---
+                    display_params = {}
+                    for k, v in best_trial.params.items():
+                        # Format keys: replace underscores with spaces, capitalize words
+                        # e.g., "Battery Storage_kwh" -> "Battery Storage Kwh"
+                        clean_key = k.replace("_", " ").title()
+
+                        # Format values: round floats to 2 decimal places
+                        if isinstance(v, float):
+                            clean_val = round(v, 2)
+                        else:
+                            clean_val = v
+                        display_params[clean_key] = clean_val
+
+                    # Use a dataframe/table for a cleaner look than raw JSON
+                    st.table(pd.DataFrame.from_dict(display_params, orient='index', columns=['Optimal Value']))
+                    # --- End of modified display logic ---
+
+                    if best_trial.value == optimization.PENALTY_SCORE:
+                        st.error("No feasible solution found. Please relax constraints.")
+
+                except Exception as e:
+                    st.error(f"Optimization failed: {str(e)}")
