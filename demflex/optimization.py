@@ -308,7 +308,7 @@ def evaluate_scenario(
             econ_res["cashflow"] = cf
 
         cashflow = econ_res["cashflow"]
-        final_net_benefit = cashflow.iloc[-1]["cumulative_net"]
+        final_net_benefit = cashflow.iloc[-1]["cumulative_net"]  # TODO: if it is true?
 
         return {
             "net_benefit": final_net_benefit,
