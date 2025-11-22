@@ -770,19 +770,25 @@ elif page == "Economics":
             with st.expander("Intermediates"):
                 st.json(econ_res["intermediates"], expanded=False)
 
+# ... (Existing code above) ...
+# ... (Existing code above) ...
 
 elif page == "Optimization":
-    st.header("AI Optimization (Combinations)")
+    st.header("AI Optimization")
     st.markdown("Find the best **combination of technologies** to maximize Net Benefit.")
 
     # Inputs
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        min_target_mw = st.number_input("Minimum Target Peak Reduction (MW)", value=50.0, step=5.0)
+        min_target_mw = st.number_input("Min Target Peak Reduction (MW)", value=50.0, step=5.0)
         total_households = st.number_input("Total households", min_value=0, value=3_000_000, step=1000,
                                            key="opt_households")
     with col2:
-        n_trials = st.number_input("Optimization Trials (Iterations)", value=50, step=10, min_value=10, max_value=500)
+        # Add Budget Limit Input
+        max_budget = st.number_input("Budget Limit ($)", min_value=0.0, value=5_000_000.0, step=100_000.0, format="%f")
+        n_trials = st.number_input("Optimization Trials", value=50, step=10, min_value=10, max_value=500)
+    with col3:
+        st.write("")  # Spacer
 
     # Tech specific penetration rates
     st.markdown("##### Penetration Rates per Technology")
@@ -803,12 +809,30 @@ elif page == "Optimization":
     }
 
     # Display participant counts
-    st.markdown(
+    st.info(
         f"**Potential Participants:** "
         f"{participants_map['Battery Storage']:,} | "
         f"{participants_map['Thermostats']:,} | "
         f"{participants_map['Solar PV']:,}"
     )
+
+    # Unit Costs Configuration (User Input)
+    with st.expander("Unit Costs Configuration", expanded=False):
+        st.caption("Set unit costs for calculation. These override defaults.")
+        uc1, uc2, uc3 = st.columns(3)
+        with uc1:
+            cost_solar = st.number_input("Solar Cost ($/kW)", value=3000.0, step=100.0)
+        with uc2:
+            cost_batt = st.number_input("Battery Cost ($/kWh)", value=500.0, step=50.0)
+        with uc3:
+            cost_therm = st.number_input("Thermostat Cost ($/device)", value=200.0, step=10.0)
+
+    # Pack into dictionary for optimization
+    unit_costs = {
+        "solar_per_kw": cost_solar,
+        "battery_per_kwh": cost_batt,
+        "thermostat_per_device": cost_therm
+    }
 
     # Advanced Configuration for Search Ranges
     with st.expander("Advanced Search Space Configuration", expanded=False):
@@ -867,44 +891,47 @@ elif page == "Optimization":
                         price_df=price_df,
                         config=cfg,
                         min_target_mw=min_target_mw,
+                        max_budget=max_budget,  # Pass budget constraint
                         participants_map=participants_map,
+                        unit_costs=unit_costs,  # Pass unit costs
                         constraints=constraints,
                         n_trials=n_trials
                     )
 
                     st.success("Optimization Complete!")
 
-                    st.metric("Best Combination", best_trial.params.get("combination", "N/A"))
-
-                    m1, m2 = st.columns(2)
+                    m1, m2, m3, m4 = st.columns(4)
                     with m1:
                         st.metric("Max Total Net Benefit", f"${best_trial.value:,.2f}")
                     with m2:
+                        st.metric("Best Combination", best_trial.params.get("combination", "N/A"))
+                    with m3:
                         reduced_mw = best_trial.user_attrs.get('reduced_peak_MW', 0)
                         st.metric("Total Reduced Peak MW", f"{reduced_mw:.2f} MW")
+                    with m4:
+                        # Show Investment Cost
+                        inv_cost = best_trial.user_attrs.get('total_investment_cost', 0)
+                        st.metric("Total Investment", f"${inv_cost:,.0f}")
 
                     st.subheader("Optimal Configuration Details")
 
-                    # --- Start of modified display logic ---
+                    # --- Formatting Results Table ---
                     display_params = {}
                     for k, v in best_trial.params.items():
-                        # Format keys: replace underscores with spaces, capitalize words
-                        # e.g., "Battery Storage_kwh" -> "Battery Storage Kwh"
                         clean_key = k.replace("_", " ").title()
-
-                        # Format values: round floats to 2 decimal places
                         if isinstance(v, float):
                             clean_val = round(v, 2)
                         else:
                             clean_val = v
                         display_params[clean_key] = clean_val
 
-                    # Use a dataframe/table for a cleaner look than raw JSON
                     st.table(pd.DataFrame.from_dict(display_params, orient='index', columns=['Optimal Value']))
-                    # --- End of modified display logic ---
+                    # --------------------------------
 
                     if best_trial.value == optimization.PENALTY_SCORE:
-                        st.error("No feasible solution found. Please relax constraints.")
+                        st.error("No feasible solution found. Please relax constraints (e.g., Budget or MW Target).")
+                    elif "violation" in best_trial.user_attrs:
+                        st.warning(f"Note: Violation recorded: {best_trial.user_attrs['violation']}")
 
                 except Exception as e:
                     st.error(f"Optimization failed: {str(e)}")
